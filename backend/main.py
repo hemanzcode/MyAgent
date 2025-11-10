@@ -41,7 +41,6 @@ Base = declarative_base()
 # ============================================================================
 class Conversation(Base):
     __tablename__ = "conversations"
-    # ALTERAÇÃO: BigInteger para suportar timestamps grandes
     id = Column(BigInteger, primary_key=True, index=True)
     title = Column(String(255), default="Conversation")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -50,7 +49,6 @@ class Conversation(Base):
 class Message(Base):
     __tablename__ = "messages"
     id = Column(Integer, primary_key=True, index=True)
-    # ALTERAÇÃO: BigInteger para conversation_id
     conversation_id = Column(BigInteger, ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
     role = Column(String(32), nullable=False)
     content = Column(Text)
@@ -61,24 +59,15 @@ class Message(Base):
 # DATABASE INITIALIZATION WITH RETRY LOGIC
 # ============================================================================
 def init_db(max_retries: int = 5, retry_interval: int = 5):
-    """
-    Initialize database with retry logic to handle startup race conditions.
-    
-    Args:
-        max_retries: Maximum number of connection attempts
-        retry_interval: Seconds to wait between retries
-    """
     logger.info("Starting database initialization...")
     
     for attempt in range(1, max_retries + 1):
         try:
             logger.info(f"Database connection attempt {attempt}/{max_retries}")
             
-            # Test connection
             with engine.connect() as conn:
                 conn.execute(func.now())
             
-            # Drop and recreate tables (only for development!)
             logger.warning("Dropping all existing tables...")
             Base.metadata.drop_all(bind=engine)
             
@@ -110,12 +99,107 @@ def init_db(max_retries: int = 5, retry_interval: int = 5):
 # DATABASE DEPENDENCY
 # ============================================================================
 def get_db():
-    """Dependency for getting database session."""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+# ============================================================================
+# HELPER: Generate conversation title from context
+# ============================================================================
+async def generate_conversation_title(messages_context: str, api_key: str) -> str:
+    """
+    Generate a concise, contextual title for the conversation based on the message context.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            payload = {
+                "model": "gpt-3.5-turbo",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Gere um título curto e descritivo (máximo 6 palavras) para uma conversa baseada no contexto fornecido. Responda APENAS com o título, sem aspas ou pontuação extra."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Contexto da conversa: {messages_context[:400]}"
+                    }
+                ],
+                "max_tokens": 20,
+                "temperature": 0.7,
+            }
+            
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            r = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                json=payload,
+                headers=headers
+            )
+            
+            if r.status_code == 200:
+                data = r.json()
+                if "choices" in data and len(data["choices"]) > 0:
+                    title = data["choices"][0]["message"]["content"].strip()
+                    # Remove quotes if present
+                    title = title.strip('"\'')
+                    # Limit length
+                    if len(title) > 60:
+                        title = title[:57] + "..."
+                    return title
+    except Exception as e:
+        logger.warning(f"Failed to generate title: {str(e)}")
+    
+    # Fallback: use first words of the context
+    words = messages_context.split()[:6]
+    return " ".join(words) + ("..." if len(messages_context.split()) > 6 else "")
+
+
+async def update_conversation_title(conv_id: int, db: Session, api_key: str):
+    """
+    Update conversation title based on the conversation context.
+    Triggered after 3+ messages to ensure enough context.
+    """
+    try:
+        # Get message count
+        msg_count = db.query(Message).filter(Message.conversation_id == conv_id).count()
+        
+        # Only update if we have at least 3 messages (user + assistant + user)
+        if msg_count < 3:
+            return
+        
+        # Get recent messages for context
+        recent_messages = db.query(Message)\
+            .filter(Message.conversation_id == conv_id)\
+            .order_by(Message.id.asc())\
+            .limit(6)\
+            .all()
+        
+        # Build context string
+        context_parts = []
+        for msg in recent_messages:
+            prefix = "Usuário" if msg.role == "user" else "Assistente"
+            context_parts.append(f"{prefix}: {msg.content[:150]}")
+        
+        context = " | ".join(context_parts)
+        
+        # Generate new title
+        new_title = await generate_conversation_title(context, api_key)
+        
+        # Update conversation
+        conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
+        if conv and conv.title != new_title:
+            conv.title = new_title
+            db.commit()
+            logger.info(f"Updated conversation {conv_id} title to: {new_title}")
+            
+    except Exception as e:
+        logger.warning(f"Failed to update conversation title: {str(e)}")
 
 
 # ============================================================================
@@ -157,6 +241,7 @@ class ConversationDetailResponse(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     conversation_id: int
+    title: Optional[str] = None
 
 
 # ============================================================================
@@ -190,7 +275,6 @@ app.add_middleware(
 # ============================================================================
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database on application startup."""
     logger.info("🚀 Starting MyAgent API...")
     init_db()
     logger.info("✅ Application ready!")
@@ -201,9 +285,7 @@ async def startup_event():
 # ============================================================================
 @app.get("/health")
 async def health():
-    """Health check endpoint."""
     try:
-        # Test database connection
         with engine.connect() as conn:
             conn.execute(func.now())
         return {"status": "healthy", "database": "connected"}
@@ -217,7 +299,6 @@ async def health():
 # ============================================================================
 @app.post("/message")
 async def create_message(message: MessageSchema, db: Session = Depends(get_db)):
-    """Create a standalone message (legacy endpoint)."""
     try:
         db_message = Message(role='user', content=message.message, conversation_id=None)
         db.add(db_message)
@@ -232,7 +313,6 @@ async def create_message(message: MessageSchema, db: Session = Depends(get_db)):
 
 @app.get("/messages", response_model=List[MessageResponse])
 async def get_messages(db: Session = Depends(get_db)):
-    """Get all messages ordered by most recent."""
     try:
         messages = db.query(Message).order_by(Message.id.desc()).all()
         return [
@@ -257,7 +337,6 @@ async def create_conversation(
     payload: ConversationCreate,
     db: Session = Depends(get_db)
 ):
-    """Create a new conversation."""
     try:
         title = payload.title or "New Conversation"
         conv = Conversation(title=title)
@@ -274,7 +353,6 @@ async def create_conversation(
 
 @app.get("/conversations", response_model=List[ConversationResponse])
 async def list_conversations(db: Session = Depends(get_db)):
-    """List all conversations with message count and preview."""
     try:
         convs = db.query(Conversation).order_by(Conversation.created_at.desc()).all()
         result = []
@@ -305,7 +383,6 @@ async def list_conversations(db: Session = Depends(get_db)):
 
 @app.get("/conversations/{conv_id}", response_model=ConversationDetailResponse)
 async def get_conversation(conv_id: int, db: Session = Depends(get_db)):
-    """Get conversation details with all messages."""
     try:
         conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
         if not conv:
@@ -341,14 +418,6 @@ async def get_conversation(conv_id: int, db: Session = Depends(get_db)):
 # ============================================================================
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, db: Session = Depends(get_db)):
-    """
-    Send message to OpenAI and maintain conversation history.
-    
-    - Creates conversation if not provided
-    - Maintains full context by sending all previous messages
-    - Saves both user and assistant messages to database
-    """
-    # Validate OpenAI API key
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         logger.error("OPENAI_API_KEY not configured")
@@ -361,23 +430,29 @@ async def chat(req: ChatRequest, db: Session = Depends(get_db)):
     
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            # Create conversation if not provided
             conv_id = req.conversation_id
+            is_new_conversation = False
+            
+            # Create conversation if not provided
             if conv_id is None:
-                conv = Conversation(title="New Chat")
+                # Generate contextual title from first message
+                title = await generate_conversation_title(f"Usuário: {req.message}", api_key)
+                conv = Conversation(title=title)
                 db.add(conv)
                 db.commit()
                 db.refresh(conv)
                 conv_id = conv.id
-                logger.info(f"Created new conversation: {conv_id}")
+                is_new_conversation = True
+                logger.info(f"Created new conversation: {conv_id} with title: {title}")
             else:
-                # ADIÇÃO: Criar conversa com ID específico se não existir
                 existing = db.query(Conversation).filter(Conversation.id == conv_id).first()
                 if not existing:
-                    conv = Conversation(id=conv_id, title="New Chat")
+                    title = await generate_conversation_title(f"Usuário: {req.message}", api_key)
+                    conv = Conversation(id=conv_id, title=title)
                     db.add(conv)
                     db.commit()
-                    logger.info(f"Created conversation with ID: {conv_id}")
+                    is_new_conversation = True
+                    logger.info(f"Created conversation with ID: {conv_id} and title: {title}")
 
             # Retrieve conversation history
             previous_messages = db.query(Message)\
@@ -390,11 +465,9 @@ async def chat(req: ChatRequest, db: Session = Depends(get_db)):
                 {"role": "system", "content": "You are a helpful assistant."}
             ]
             
-            # Add conversation history
             for msg in previous_messages:
                 messages.append({"role": msg.role, "content": msg.content})
             
-            # Add current user message
             messages.append({"role": "user", "content": req.message})
 
             # Save user message
@@ -453,7 +526,20 @@ async def chat(req: ChatRequest, db: Session = Depends(get_db)):
             db.commit()
             logger.info(f"Assistant response saved to conversation {conv_id}")
 
-            return ChatResponse(reply=assistant_text, conversation_id=conv_id)
+            # Update conversation title based on context (after 3+ messages)
+            await update_conversation_title(conv_id, db, api_key)
+
+            # Get updated conversation for response
+            conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
+            
+            # Return response with updated title
+            response_data = ChatResponse(
+                reply=assistant_text, 
+                conversation_id=conv_id,
+                title=conv.title if conv else None
+            )
+
+            return response_data
             
         except httpx.HTTPStatusError as e:
             db.rollback()
@@ -468,9 +554,6 @@ async def chat(req: ChatRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============================================================================
-# MAIN ENTRY POINT (for direct execution)
-# ============================================================================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

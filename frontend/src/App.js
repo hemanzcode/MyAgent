@@ -17,6 +17,9 @@ const themes = {
     messageAssistant: '#f6f6f6',
     selected: '#f0f0f0',
     inputBorder: '#dddddd',
+    codeBackground: '#f5f5f5',
+    codeBorder: '#e0e0e0',
+    codeText: '#1a1a1a',
   },
   dark: {
     background: '#1a1a1a',
@@ -28,6 +31,9 @@ const themes = {
     messageAssistant: '#2d2d2d',
     selected: '#363636',
     inputBorder: '#404040',
+    codeBackground: '#1e1e1e',
+    codeBorder: '#3a3a3a',
+    codeText: '#d4d4d4',
   }
 };
 
@@ -51,6 +57,128 @@ function ThemeProvider({ children }) {
   );
 }
 
+// Component to render message content with code blocks
+function MessageContent({ content, theme }) {
+  const [copied, setCopied] = useState(null);
+
+  const copyToClipboard = (text, index) => {
+    navigator.clipboard.writeText(text);
+    setCopied(index);
+    setTimeout(() => setCopied(null), 2000);
+  };
+
+  // Parse content for code blocks (```language\ncode```)
+  const parseContent = (text) => {
+    const parts = [];
+    const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = codeBlockRegex.exec(text)) !== null) {
+      // Add text before code block
+      if (match.index > lastIndex) {
+        parts.push({
+          type: 'text',
+          content: text.slice(lastIndex, match.index)
+        });
+      }
+
+      // Add code block
+      parts.push({
+        type: 'code',
+        language: match[1] || 'text',
+        content: match[2].trim()
+      });
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    // Add remaining text
+    if (lastIndex < text.length) {
+      parts.push({
+        type: 'text',
+        content: text.slice(lastIndex)
+      });
+    }
+
+    return parts.length > 0 ? parts : [{ type: 'text', content: text }];
+  };
+
+  const parts = parseContent(content);
+
+  return (
+    <div>
+      {parts.map((part, index) => {
+        if (part.type === 'code') {
+          return (
+            <div
+              key={index}
+              style={{
+                marginTop: 8,
+                marginBottom: 8,
+                borderRadius: 6,
+                border: `1px solid ${theme.codeBorder}`,
+                overflow: 'hidden'
+              }}
+            >
+              {/* Code header */}
+              <div
+                style={{
+                  background: theme.codeBorder,
+                  padding: '6px 12px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  fontSize: 12,
+                  color: theme.secondaryText
+                }}
+              >
+                <span>{part.language}</span>
+                <button
+                  onClick={() => copyToClipboard(part.content, index)}
+                  style={{
+                    padding: '4px 8px',
+                    fontSize: 11,
+                    cursor: 'pointer',
+                    border: 'none',
+                    borderRadius: 4,
+                    background: theme.background,
+                    color: theme.text
+                  }}
+                >
+                  {copied === index ? '✓ Copiado' : 'Copiar'}
+                </button>
+              </div>
+              {/* Code content */}
+              <pre
+                style={{
+                  margin: 0,
+                  padding: 12,
+                  background: theme.codeBackground,
+                  color: theme.codeText,
+                  overflow: 'auto',
+                  fontSize: 13,
+                  fontFamily: 'monospace',
+                  lineHeight: 1.5
+                }}
+              >
+                <code>{part.content}</code>
+              </pre>
+            </div>
+          );
+        } else {
+          // Render normal text with line breaks preserved
+          return (
+            <div key={index} style={{ whiteSpace: 'pre-wrap' }}>
+              {part.content}
+            </div>
+          );
+        }
+      })}
+    </div>
+  );
+}
+
 function App() {
   const [conversations, setConversations] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -60,12 +188,10 @@ function App() {
   const { theme, isDark, toggleTheme } = useContext(ThemeContext);
 
   useEffect(() => {
-    // Prefer backend conversations; fallback to localStorage if backend unavailable
     const fetchConvs = async () => {
       try {
         const resp = await axios.get('http://localhost:8000/conversations');
         if (Array.isArray(resp.data) && resp.data.length > 0) {
-          // normalize
           const mapped = resp.data.map((c) => ({ id: c.id, title: c.title, messages: [] }));
           setConversations(mapped);
           setSelectedId(mapped[0].id);
@@ -86,8 +212,7 @@ function App() {
           console.error('Failed to parse conversations from localStorage', e);
         }
       } else {
-        // create initial conversation
-        const first = { id: Date.now().toString(), title: 'Conversation 1', messages: [] };
+        const first = { id: Date.now().toString(), title: 'Conversa 1', messages: [] };
         setConversations([first]);
         setSelectedId(first.id);
         localStorage.setItem(STORAGE_KEY, JSON.stringify([first]));
@@ -106,10 +231,11 @@ function App() {
   };
 
   const createConversation = () => {
-    // create via backend when possible
     const doCreate = async () => {
       try {
-        const resp = await axios.post('http://localhost:8000/conversations', { title: `Conversation ${conversations.length + 1}` });
+        const resp = await axios.post('http://localhost:8000/conversations', { 
+          title: `Conversa ${conversations.length + 1}` 
+        });
         const conv = resp.data;
         const next = [{ id: conv.id, title: conv.title, messages: [] }, ...conversations];
         persist(next);
@@ -120,7 +246,7 @@ function App() {
       }
 
       const id = Date.now().toString();
-      const title = `Conversation ${conversations.length + 1}`;
+      const title = `Conversa ${conversations.length + 1}`;
       const next = [{ id, title, messages: [] }, ...conversations];
       persist(next);
       setSelectedId(id);
@@ -130,7 +256,6 @@ function App() {
 
   const selectConversation = (id) => {
     setSelectedId(id);
-    // fetch messages for conversation from backend if available
     const fetchMessages = async () => {
       try {
         const resp = await axios.get(`http://localhost:8000/conversations/${id}`);
@@ -151,7 +276,6 @@ function App() {
     if (!input || !selectedConv) return;
     const userMsg = { role: 'user', content: input, ts: Date.now() };
 
-    // Optimistic update
     const updated = conversations.map((c) =>
       c.id === selectedConv.id ? { ...c, messages: [...(c.messages || []), userMsg] } : c
     );
@@ -168,17 +292,23 @@ function App() {
       const assistantText = resp.data && resp.data.reply ? resp.data.reply : 'No reply';
       const assistantMsg = { role: 'assistant', content: assistantText, ts: Date.now() };
 
-      // update using backend returned conversation id (in case one was created)
       const convId = resp.data && resp.data.conversation_id ? resp.data.conversation_id : selectedConv.id;
-      const withAssistant = updated.map((c) =>
+      
+      // Update title if returned (new conversation)
+      let withAssistant = updated.map((c) =>
         c.id === selectedConv.id || c.id === convId ? { ...c, messages: [...(c.messages || []), assistantMsg] } : c
       );
+
+      if (resp.data.title && resp.data.title !== selectedConv.title) {
+        withAssistant = withAssistant.map((c) =>
+          c.id === convId ? { ...c, title: resp.data.title } : c
+        );
+      }
+
       persist(withAssistant);
-      // if convId differs (number vs string) normalize
       if (convId !== selectedConv.id) setSelectedId(convId);
     } catch (err) {
       console.error('Error calling backend /chat', err);
-      // append an error message
       const errMsg = { role: 'assistant', content: 'Erro: não foi possível obter resposta do backend.', ts: Date.now() };
       const withError = updated.map((c) =>
         c.id === selectedConv.id ? { ...c, messages: [...(c.messages || []), errMsg] } : c
@@ -211,7 +341,7 @@ function App() {
           alignItems: 'center', 
           marginBottom: 12 
         }}>
-          <h3 style={{ margin: 0 }}>Conversations</h3>
+          <h3 style={{ margin: 0 }}>Conversas</h3>
           <div style={{ display: 'flex', gap: 8 }}>
             <button 
               onClick={toggleTheme}
@@ -257,8 +387,10 @@ function App() {
                 background: c.id === selectedId ? theme.selected : 'transparent',
               }}
             >
-              <div style={{ fontWeight: 600 }}>{c.title}</div>
-              <div style={{ fontSize: 12, color: theme.secondaryText }}>{(c.messages && c.messages.length) || 0} messages</div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>{c.title}</div>
+              <div style={{ fontSize: 12, color: theme.secondaryText }}>
+                {(c.messages && c.messages.length) || 0} mensagens
+              </div>
             </div>
           ))}
         </div>
@@ -267,36 +399,52 @@ function App() {
       {/* Right panel: chat */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: 16, borderBottom: `1px solid ${theme.border}` }}>
-          <h2 style={{ margin: 0 }}>{selectedConv ? selectedConv.title : 'Selecione uma conversa'}</h2>
+          <h2 style={{ margin: 0 }}>
+            {selectedConv ? selectedConv.title : 'Selecione uma conversa'}
+          </h2>
         </div>
 
         <div style={{ flex: 1, padding: 16, overflowY: 'auto' }}>
           {selectedConv && selectedConv.messages && selectedConv.messages.length > 0 ? (
             selectedConv.messages.map((m, idx) => (
-              <div key={idx} style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 12, color: theme.secondaryText, marginBottom: 4 }}>{m.role}</div>
+              <div key={idx} style={{ marginBottom: 16 }}>
                 <div style={{ 
-                  padding: 10, 
+                  fontSize: 12, 
+                  color: theme.secondaryText, 
+                  marginBottom: 4,
+                  fontWeight: 600
+                }}>
+                  {m.role === 'user' ? 'Você' : 'Assistente'}
+                </div>
+                <div style={{ 
+                  padding: 12, 
                   background: m.role === 'user' ? theme.messageUser : theme.messageAssistant, 
-                  borderRadius: 6,
+                  borderRadius: 8,
                   color: theme.text
                 }}>
-                  {m.content}
+                  <MessageContent content={m.content} theme={theme} />
                 </div>
               </div>
             ))
           ) : (
-            <div style={{ color: theme.secondaryText }}>Nenhuma mensagem ainda. Comece uma conversa.</div>
+            <div style={{ color: theme.secondaryText }}>
+              Nenhuma mensagem ainda. Comece uma conversa.
+            </div>
           )}
         </div>
 
-        <div style={{ padding: 12, borderTop: `1px solid ${theme.border}`, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+        <div style={{ 
+          padding: 12, 
+          borderTop: `1px solid ${theme.border}`, 
+          display: 'flex', 
+          gap: 8, 
+          alignItems: 'flex-end' 
+        }}>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
             <textarea
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);
-                // rough token estimate: 1 token ~= 4 chars
                 setTokenEstimate(Math.ceil(e.target.value.length / 4));
               }}
               onKeyDown={(e) => {
@@ -314,20 +462,32 @@ function App() {
                 borderRadius: 6, 
                 border: `1px solid ${theme.inputBorder}`,
                 background: theme.background,
-                color: theme.text
+                color: theme.text,
+                fontFamily: 'inherit'
               }}
               disabled={loading}
               maxLength={20000}
             />
             <div style={{ fontSize: 12, color: tokenEstimate > 4000 ? 'red' : theme.secondaryText }}>
-              Est. tokens do usuário: {tokenEstimate} {tokenEstimate > 4000 ? '(alto — pode exceder limites do modelo)' : ''}
+              Est. tokens: {tokenEstimate} {tokenEstimate > 4000 ? '(alto — pode exceder limites)' : ''}
             </div>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <button onClick={sendMessage} disabled={loading || !input} style={{ padding: '8px 12px', minWidth: 90 }}>
-              {loading ? '...' : 'Enviar'}
-            </button>
-          </div>
+          <button 
+            onClick={sendMessage} 
+            disabled={loading || !input} 
+            style={{ 
+              padding: '10px 16px', 
+              minWidth: 90,
+              borderRadius: 6,
+              cursor: loading || !input ? 'not-allowed' : 'pointer',
+              border: 'none',
+              background: loading || !input ? theme.border : '#0066cc',
+              color: '#ffffff',
+              fontWeight: 600
+            }}
+          >
+            {loading ? '...' : 'Enviar'}
+          </button>
         </div>
       </div>
     </div>
