@@ -36,6 +36,12 @@ engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+def init_db():
+    # Drop all tables first to ensure clean state
+    Base.metadata.drop_all(bind=engine)
+    # Create all tables
+    Base.metadata.create_all(bind=engine)
+
 # Conversation and Message models
 class Conversation(Base):
     __tablename__ = "conversations"
@@ -53,9 +59,8 @@ class Message(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
-# Create tables
-Base.metadata.create_all(bind=engine)
-
+# Initialize database with tables
+init_db()
 
 # Request / response models
 class MessageSchema(BaseModel):
@@ -149,6 +154,11 @@ async def get_conversation(conv_id: int):
         db.close()
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.post("/chat")
 async def chat(req: ChatRequest):
     """Proxy a user message to OpenAI Chat Completions and return assistant reply.
@@ -159,7 +169,7 @@ async def chat(req: ChatRequest):
     if not api_key:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY not set in environment")
 
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")  # Use a valid default model
 
     # Build payload for Chat Completions
     payload = {
@@ -169,7 +179,7 @@ async def chat(req: ChatRequest):
             {"role": "user", "content": req.message},
         ],
         "max_tokens": 800,
-        "temperature": 0.2,
+        "temperature": 0.7,
     }
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}

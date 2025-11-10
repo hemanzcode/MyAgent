@@ -1,7 +1,55 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, createContext, useContext } from 'react';
 import axios from 'axios';
 
 const STORAGE_KEY = 'myagent_conversations_v1';
+const THEME_KEY = 'myagent_theme';
+
+const ThemeContext = createContext();
+
+const themes = {
+  light: {
+    background: '#ffffff',
+    text: '#000000',
+    secondaryText: '#666666',
+    border: '#eeeeee',
+    sidebar: '#ffffff',
+    messageUser: '#e6f7ff',
+    messageAssistant: '#f6f6f6',
+    selected: '#f0f0f0',
+    inputBorder: '#dddddd',
+  },
+  dark: {
+    background: '#1a1a1a',
+    text: '#ffffff',
+    secondaryText: '#999999',
+    border: '#333333',
+    sidebar: '#242424',
+    messageUser: '#1e3a8a',
+    messageAssistant: '#2d2d2d',
+    selected: '#363636',
+    inputBorder: '#404040',
+  }
+};
+
+function ThemeProvider({ children }) {
+  const [isDark, setIsDark] = useState(() => {
+    const saved = localStorage.getItem(THEME_KEY);
+    return saved ? JSON.parse(saved) : false;
+  });
+
+  const toggleTheme = () => {
+    setIsDark(!isDark);
+    localStorage.setItem(THEME_KEY, JSON.stringify(!isDark));
+  };
+
+  const theme = isDark ? themes.dark : themes.light;
+
+  return (
+    <ThemeContext.Provider value={{ theme, isDark, toggleTheme }}>
+      {children}
+    </ThemeContext.Provider>
+  );
+}
 
 function App() {
   const [conversations, setConversations] = useState([]);
@@ -9,6 +57,7 @@ function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [tokenEstimate, setTokenEstimate] = useState(0);
+  const { theme, isDark, toggleTheme } = useContext(ThemeContext);
 
   useEffect(() => {
     // Prefer backend conversations; fallback to localStorage if backend unavailable
@@ -141,12 +190,58 @@ function App() {
   };
 
   return (
-    <div style={{ display: 'flex', height: '100vh', fontFamily: 'Arial, sans-serif' }}>
+    <div style={{ 
+      display: 'flex', 
+      height: '100vh', 
+      fontFamily: 'Arial, sans-serif',
+      background: theme.background,
+      color: theme.text
+    }}>
       {/* Left sidebar: conversations */}
-      <div style={{ width: 280, borderRight: '1px solid #eee', padding: 12, boxSizing: 'border-box' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+      <div style={{ 
+        width: 280, 
+        borderRight: `1px solid ${theme.border}`, 
+        padding: 12, 
+        boxSizing: 'border-box',
+        background: theme.sidebar
+      }}>
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center', 
+          marginBottom: 12 
+        }}>
           <h3 style={{ margin: 0 }}>Conversations</h3>
-          <button onClick={createConversation}>Novo</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button 
+              onClick={toggleTheme}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 4,
+                cursor: 'pointer',
+                border: `1px solid ${theme.border}`,
+                background: theme.background,
+                color: theme.text
+              }}
+            >
+              {isDark ? '☀️' : '🌙'}
+            </button>
+            <button 
+              onClick={createConversation}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 4,
+                cursor: 'pointer',
+                border: `1px solid ${theme.border}`,
+                background: theme.background,
+                color: theme.text,
+                fontSize: '16px',
+                fontWeight: 'bold'
+              }}
+            >
+              +
+            </button>
+          </div>
         </div>
 
         <div style={{ overflowY: 'auto', height: 'calc(100% - 48px)' }}>
@@ -159,11 +254,11 @@ function App() {
                 marginBottom: 8,
                 borderRadius: 6,
                 cursor: 'pointer',
-                background: c.id === selectedId ? '#f0f0f0' : 'transparent',
+                background: c.id === selectedId ? theme.selected : 'transparent',
               }}
             >
               <div style={{ fontWeight: 600 }}>{c.title}</div>
-              <div style={{ fontSize: 12, color: '#666' }}>{(c.messages && c.messages.length) || 0} messages</div>
+              <div style={{ fontSize: 12, color: theme.secondaryText }}>{(c.messages && c.messages.length) || 0} messages</div>
             </div>
           ))}
         </div>
@@ -171,7 +266,7 @@ function App() {
 
       {/* Right panel: chat */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: 16, borderBottom: '1px solid #eee' }}>
+        <div style={{ padding: 16, borderBottom: `1px solid ${theme.border}` }}>
           <h2 style={{ margin: 0 }}>{selectedConv ? selectedConv.title : 'Selecione uma conversa'}</h2>
         </div>
 
@@ -179,18 +274,23 @@ function App() {
           {selectedConv && selectedConv.messages && selectedConv.messages.length > 0 ? (
             selectedConv.messages.map((m, idx) => (
               <div key={idx} style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 12, color: '#444', marginBottom: 4 }}>{m.role}</div>
-                <div style={{ padding: 10, background: m.role === 'user' ? '#e6f7ff' : '#f6f6f6', borderRadius: 6 }}>
+                <div style={{ fontSize: 12, color: theme.secondaryText, marginBottom: 4 }}>{m.role}</div>
+                <div style={{ 
+                  padding: 10, 
+                  background: m.role === 'user' ? theme.messageUser : theme.messageAssistant, 
+                  borderRadius: 6,
+                  color: theme.text
+                }}>
                   {m.content}
                 </div>
               </div>
             ))
           ) : (
-            <div style={{ color: '#888' }}>Nenhuma mensagem ainda. Comece uma conversa.</div>
+            <div style={{ color: theme.secondaryText }}>Nenhuma mensagem ainda. Comece uma conversa.</div>
           )}
         </div>
 
-        <div style={{ padding: 12, borderTop: '1px solid #eee', display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+        <div style={{ padding: 12, borderTop: `1px solid ${theme.border}`, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
             <textarea
               value={input}
@@ -206,11 +306,20 @@ function App() {
                 }
               }}
               placeholder={loading ? 'Enviando...' : 'Digite sua mensagem... (Shift+Enter para nova linha)'}
-              style={{ width: '100%', minHeight: 60, resize: 'vertical', padding: 10, borderRadius: 6, border: '1px solid #ddd' }}
+              style={{ 
+                width: '100%', 
+                minHeight: 60, 
+                resize: 'vertical', 
+                padding: 10, 
+                borderRadius: 6, 
+                border: `1px solid ${theme.inputBorder}`,
+                background: theme.background,
+                color: theme.text
+              }}
               disabled={loading}
               maxLength={20000}
             />
-            <div style={{ fontSize: 12, color: tokenEstimate > 4000 ? 'red' : '#666' }}>
+            <div style={{ fontSize: 12, color: tokenEstimate > 4000 ? 'red' : theme.secondaryText }}>
               Est. tokens do usuário: {tokenEstimate} {tokenEstimate > 4000 ? '(alto — pode exceder limites do modelo)' : ''}
             </div>
           </div>
@@ -225,4 +334,12 @@ function App() {
   );
 }
 
-export default App;
+function AppWithTheme() {
+  return (
+    <ThemeProvider>
+      <App />
+    </ThemeProvider>
+  );
+}
+
+export default AppWithTheme;
