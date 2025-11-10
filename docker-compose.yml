@@ -1,39 +1,56 @@
 version: '3.8'
 
 services:
-  frontend:
-    build: ./frontend
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
+  db:
+    image: postgres:15
+    container_name: myagent-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
     volumes:
-      - ./frontend:/app
-      - /app/node_modules
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - myagent_network
 
   backend:
     build: ./backend
+    container_name: myagent-backend
+    depends_on:
+      db:
+        condition: service_healthy  # 👈 SÓ inicia quando DB estiver saudável
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/postgres
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: gpt-3.5-turbo
+      ALLOWED_ORIGINS: http://localhost:3000
     ports:
       - "8000:8000"
-    depends_on:
-      - db
-    volumes:
-      - ./backend:/app
-    env_file:
-      - .env
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
+    networks:
+      - myagent_network
 
-  db:
-    image: postgres:15
+  frontend:
+    build: ./frontend
+    container_name: myagent-frontend
+    depends_on:
+      - backend
     ports:
-      - "5432:5432"
+      - "3000:3000"
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=postgres
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+      REACT_APP_API_URL: http://localhost:8000
+    networks:
+      - myagent_network
 
 volumes:
   postgres_data:
+
+networks:
+  myagent_network:
+    driver: bridge

@@ -1,21 +1,176 @@
-from fastapi import FastAPI, HTTPException
+import os
+import time
+import logging
+from typing import Optional, List
+from contextlib import contextmanager
+
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, DateTime, func
+from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, DateTime, BigInteger, func
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-import os
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.exc import OperationalError
 import httpx
-from typing import Optional
 from dotenv import load_dotenv
 
-# load environment from .env if present
+# ============================================================================
+# LOGGING CONFIGURATION
+# ============================================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# ENVIRONMENT CONFIGURATION
+# ============================================================================
 load_dotenv()
 
-# App and CORS configuration
-app = FastAPI()
+# ============================================================================
+# DATABASE CONFIGURATION
+# ============================================================================
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/postgres")
+engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-# Build allowed origins from environment or default to localhost dev origins
+# ============================================================================
+# DATABASE MODELS
+# ============================================================================
+class Conversation(Base):
+    __tablename__ = "conversations"
+    # ALTERAÇÃO: BigInteger para suportar timestamps grandes
+    id = Column(BigInteger, primary_key=True, index=True)
+    title = Column(String(255), default="Conversation")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Message(Base):
+    __tablename__ = "messages"
+    id = Column(Integer, primary_key=True, index=True)
+    # ALTERAÇÃO: BigInteger para conversation_id
+    conversation_id = Column(BigInteger, ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+    role = Column(String(32), nullable=False)
+    content = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ============================================================================
+# DATABASE INITIALIZATION WITH RETRY LOGIC
+# ============================================================================
+def init_db(max_retries: int = 5, retry_interval: int = 5):
+    """
+    Initialize database with retry logic to handle startup race conditions.
+    
+    Args:
+        max_retries: Maximum number of connection attempts
+        retry_interval: Seconds to wait between retries
+    """
+    logger.info("Starting database initialization...")
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"Database connection attempt {attempt}/{max_retries}")
+            
+            # Test connection
+            with engine.connect() as conn:
+                conn.execute(func.now())
+            
+            # Drop and recreate tables (only for development!)
+            logger.warning("Dropping all existing tables...")
+            Base.metadata.drop_all(bind=engine)
+            
+            logger.info("Creating all tables...")
+            Base.metadata.create_all(bind=engine)
+            
+            logger.info("✅ Database initialized successfully!")
+            return
+            
+        except OperationalError as e:
+            if attempt < max_retries:
+                logger.warning(
+                    f"⚠️  Database not ready: {str(e)}\n"
+                    f"   Retrying in {retry_interval}s... ({attempt}/{max_retries})"
+                )
+                time.sleep(retry_interval)
+            else:
+                logger.error(f"❌ Failed to connect to database after {max_retries} attempts")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Database connection failed after maximum retries"
+                )
+        except Exception as e:
+            logger.error(f"❌ Unexpected error during database initialization: {str(e)}")
+            raise
+
+
+# ============================================================================
+# DATABASE DEPENDENCY
+# ============================================================================
+def get_db():
+    """Dependency for getting database session."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# ============================================================================
+# PYDANTIC SCHEMAS
+# ============================================================================
+class MessageSchema(BaseModel):
+    message: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: Optional[int] = None
+
+
+class ConversationCreate(BaseModel):
+    title: Optional[str] = None
+
+
+class MessageResponse(BaseModel):
+    id: int
+    role: str
+    content: str
+    conversation_id: Optional[int]
+
+
+class ConversationResponse(BaseModel):
+    id: int
+    title: str
+    message_count: int
+    preview: str
+
+
+class ConversationDetailResponse(BaseModel):
+    id: int
+    title: str
+    messages: List[dict]
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    conversation_id: int
+
+
+# ============================================================================
+# FASTAPI APP INITIALIZATION
+# ============================================================================
+app = FastAPI(
+    title="MyAgent API",
+    description="AI Chat Agent with conversation management",
+    version="1.0.0"
+)
+
+# ============================================================================
+# CORS CONFIGURATION
+# ============================================================================
 _allowed = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 if _allowed.strip() == "*":
     allow_origins = ["*"]
@@ -30,181 +185,252 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Database configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/postgres")
-engine = create_engine(DATABASE_URL, future=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-def init_db():
-    # Drop all tables first to ensure clean state
-    Base.metadata.drop_all(bind=engine)
-    # Create all tables
-    Base.metadata.create_all(bind=engine)
-
-# Conversation and Message models
-class Conversation(Base):
-    __tablename__ = "conversations"
-    id = Column(Integer, primary_key=True, index=True)
-    title = Column(String(255), default="Conversation")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+# ============================================================================
+# STARTUP EVENT
+# ============================================================================
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database on application startup."""
+    logger.info("🚀 Starting MyAgent API...")
+    init_db()
+    logger.info("✅ Application ready!")
 
 
-class Message(Base):
-    __tablename__ = "messages"
-    id = Column(Integer, primary_key=True, index=True)
-    conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
-    role = Column(String(32), nullable=False)
-    content = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
-# Initialize database with tables
-init_db()
-
-# Request / response models
-class MessageSchema(BaseModel):
-    message: str
-
-
-class ChatRequest(BaseModel):
-    message: str
-    conversation_id: Optional[int] = None
-
-
-class ConversationCreate(BaseModel):
-    title: Optional[str] = None
-
-@app.post("/message")
-async def create_message(message: MessageSchema):
-    db = SessionLocal()
+# ============================================================================
+# HEALTH CHECK ENDPOINT
+# ============================================================================
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
     try:
-        # create a conversation-less message (legacy)
+        # Test database connection
+        with engine.connect() as conn:
+            conn.execute(func.now())
+        return {"status": "healthy", "database": "connected"}
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        raise HTTPException(status_code=503, detail="Service unhealthy")
+
+
+# ============================================================================
+# MESSAGE ENDPOINTS
+# ============================================================================
+@app.post("/message")
+async def create_message(message: MessageSchema, db: Session = Depends(get_db)):
+    """Create a standalone message (legacy endpoint)."""
+    try:
         db_message = Message(role='user', content=message.message, conversation_id=None)
         db.add(db_message)
         db.commit()
+        logger.info(f"Message created: {message.message[:50]}...")
         return {"status": "success"}
     except Exception as e:
         db.rollback()
-        return {"status": "error", "detail": str(e)}
-    finally:
-        db.close()
+        logger.error(f"Error creating message: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/messages")
-async def get_messages():
-    db = SessionLocal()
+
+@app.get("/messages", response_model=List[MessageResponse])
+async def get_messages(db: Session = Depends(get_db)):
+    """Get all messages ordered by most recent."""
     try:
         messages = db.query(Message).order_by(Message.id.desc()).all()
-        return [{"id": msg.id, "role": msg.role, "content": msg.content, "conversation_id": msg.conversation_id} for msg in messages]
+        return [
+            MessageResponse(
+                id=msg.id,
+                role=msg.role,
+                content=msg.content,
+                conversation_id=msg.conversation_id
+            )
+            for msg in messages
+        ]
     except Exception as e:
-        return {"status": "error", "detail": str(e)}
-    finally:
-        db.close()
+        logger.error(f"Error fetching messages: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# CONVERSATION ENDPOINTS
+# ============================================================================
 @app.post("/conversations")
-async def create_conversation(payload: ConversationCreate):
-    db = SessionLocal()
+async def create_conversation(
+    payload: ConversationCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new conversation."""
     try:
-        title = payload.title or f"Conversation"
+        title = payload.title or "New Conversation"
         conv = Conversation(title=title)
         db.add(conv)
         db.commit()
         db.refresh(conv)
+        logger.info(f"Conversation created: {conv.id} - {title}")
         return {"id": conv.id, "title": conv.title}
     except Exception as e:
         db.rollback()
+        logger.error(f"Error creating conversation: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
 
 
-@app.get("/conversations")
-async def list_conversations():
-    db = SessionLocal()
+@app.get("/conversations", response_model=List[ConversationResponse])
+async def list_conversations(db: Session = Depends(get_db)):
+    """List all conversations with message count and preview."""
     try:
         convs = db.query(Conversation).order_by(Conversation.created_at.desc()).all()
-        out = []
+        result = []
+        
         for c in convs:
             count = db.query(Message).filter(Message.conversation_id == c.id).count()
-            last = db.query(Message).filter(Message.conversation_id == c.id).order_by(Message.id.desc()).first()
+            last = db.query(Message)\
+                .filter(Message.conversation_id == c.id)\
+                .order_by(Message.id.desc())\
+                .first()
+            
             preview = last.content[:200] if last and last.content else ""
-            out.append({"id": c.id, "title": c.title, "message_count": count, "preview": preview})
-        return out
+            
+            result.append(
+                ConversationResponse(
+                    id=c.id,
+                    title=c.title,
+                    message_count=count,
+                    preview=preview
+                )
+            )
+        
+        return result
     except Exception as e:
+        logger.error(f"Error listing conversations: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
 
 
-@app.get("/conversations/{conv_id}")
-async def get_conversation(conv_id: int):
-    db = SessionLocal()
+@app.get("/conversations/{conv_id}", response_model=ConversationDetailResponse)
+async def get_conversation(conv_id: int, db: Session = Depends(get_db)):
+    """Get conversation details with all messages."""
     try:
         conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
         if not conv:
             raise HTTPException(status_code=404, detail="Conversation not found")
-        msgs = db.query(Message).filter(Message.conversation_id == conv_id).order_by(Message.id.asc()).all()
-        return {"id": conv.id, "title": conv.title, "messages": [{"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at.isoformat()} for m in msgs]}
+        
+        msgs = db.query(Message)\
+            .filter(Message.conversation_id == conv_id)\
+            .order_by(Message.id.asc())\
+            .all()
+        
+        return ConversationDetailResponse(
+            id=conv.id,
+            title=conv.title,
+            messages=[
+                {
+                    "id": m.id,
+                    "role": m.role,
+                    "content": m.content,
+                    "created_at": m.created_at.isoformat()
+                }
+                for m in msgs
+            ]
+        )
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error fetching conversation {conv_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-@app.post("/chat")
-async def chat(req: ChatRequest):
-    """Proxy a user message to OpenAI Chat Completions and return assistant reply.
-
-    Expects environment variable OPENAI_API_KEY to be set. Optionally OPENAI_MODEL.
+# ============================================================================
+# CHAT ENDPOINT (OpenAI Integration)
+# ============================================================================
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest, db: Session = Depends(get_db)):
     """
+    Send message to OpenAI and maintain conversation history.
+    
+    - Creates conversation if not provided
+    - Maintains full context by sending all previous messages
+    - Saves both user and assistant messages to database
+    """
+    # Validate OpenAI API key
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not set in environment")
+        logger.error("OPENAI_API_KEY not configured")
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY not set in environment"
+        )
 
-    model = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")  # Use a valid default model
-
-    # Build payload for Chat Completions
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": req.message},
-        ],
-        "max_tokens": 800,
-        "temperature": 0.7,
-    }
-
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
+    model = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+    
     async with httpx.AsyncClient(timeout=60.0) as client:
-        db = SessionLocal()
         try:
-            # If conversation id not provided, create one
+            # Create conversation if not provided
             conv_id = req.conversation_id
             if conv_id is None:
-                conv = Conversation(title="Conversation")
+                conv = Conversation(title="New Chat")
                 db.add(conv)
                 db.commit()
                 db.refresh(conv)
                 conv_id = conv.id
+                logger.info(f"Created new conversation: {conv_id}")
+            else:
+                # ADIÇÃO: Criar conversa com ID específico se não existir
+                existing = db.query(Conversation).filter(Conversation.id == conv_id).first()
+                if not existing:
+                    conv = Conversation(id=conv_id, title="New Chat")
+                    db.add(conv)
+                    db.commit()
+                    logger.info(f"Created conversation with ID: {conv_id}")
+
+            # Retrieve conversation history
+            previous_messages = db.query(Message)\
+                .filter(Message.conversation_id == conv_id)\
+                .order_by(Message.id.asc())\
+                .all()
+
+            # Build messages array with context
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."}
+            ]
+            
+            # Add conversation history
+            for msg in previous_messages:
+                messages.append({"role": msg.role, "content": msg.content})
+            
+            # Add current user message
+            messages.append({"role": "user", "content": req.message})
 
             # Save user message
-            user_msg = Message(conversation_id=conv_id, role='user', content=req.message)
+            user_msg = Message(
+                conversation_id=conv_id,
+                role='user',
+                content=req.message
+            )
             db.add(user_msg)
             db.commit()
+            logger.info(f"User message saved to conversation {conv_id}")
 
-            r = await client.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers)
+            # Prepare OpenAI request
+            payload = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": 800,
+                "temperature": 0.7,
+            }
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+
+            # Call OpenAI API
+            logger.info(f"Calling OpenAI API with model {model}")
+            r = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                json=payload,
+                headers=headers
+            )
             r.raise_for_status()
             data = r.json()
-            # Safely extract assistant content
+            
+            # Extract assistant response
             assistant_text = ""
             if "choices" in data and len(data["choices"]) > 0:
                 choice = data["choices"][0]
@@ -213,20 +439,38 @@ async def chat(req: ChatRequest):
                 elif "text" in choice:
                     assistant_text = choice["text"]
 
-            # Save assistant reply to DB
-            assistant_msg = Message(conversation_id=conv_id, role='assistant', content=assistant_text)
+            if not assistant_text:
+                logger.warning("Empty response from OpenAI")
+                assistant_text = "I apologize, but I couldn't generate a response."
+
+            # Save assistant response
+            assistant_msg = Message(
+                conversation_id=conv_id,
+                role='assistant',
+                content=assistant_text
+            )
             db.add(assistant_msg)
             db.commit()
+            logger.info(f"Assistant response saved to conversation {conv_id}")
 
-            return {"reply": assistant_text, "conversation_id": conv_id}
+            return ChatResponse(reply=assistant_text, conversation_id=conv_id)
+            
         except httpx.HTTPStatusError as e:
             db.rollback()
-            raise HTTPException(status_code=502, detail=f"Upstream error: {str(e)}")
+            logger.error(f"OpenAI API error: {str(e)}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upstream API error: {str(e)}"
+            )
         except Exception as e:
             db.rollback()
+            logger.error(f"Chat error: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
-        finally:
-            try:
-                db.close()
-            except Exception:
-                pass
+
+
+# ============================================================================
+# MAIN ENTRY POINT (for direct execution)
+# ============================================================================
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
