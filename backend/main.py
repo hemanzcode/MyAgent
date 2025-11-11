@@ -218,6 +218,10 @@ class ConversationCreate(BaseModel):
     title: Optional[str] = None
 
 
+class ConversationUpdate(BaseModel):  # Novo: Para edição de título
+    title: str
+
+
 class MessageResponse(BaseModel):
     id: int
     role: str
@@ -410,6 +414,48 @@ async def get_conversation(conv_id: int, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         logger.error(f"Error fetching conversation {conv_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/conversations/{conv_id}")  # Novo: Editar título da conversa
+async def update_conversation(
+    conv_id: int,
+    payload: ConversationUpdate,
+    db: Session = Depends(get_db)
+):
+    try:
+        conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        conv.title = payload.title
+        db.commit()
+        db.refresh(conv)
+        logger.info(f"Conversation {conv_id} updated to title: {conv.title}")
+        return {"id": conv.id, "title": conv.title}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating conversation {conv_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/conversations/{conv_id}")  # Novo: Deletar conversa
+async def delete_conversation(
+    conv_id: int,
+    db: Session = Depends(get_db)
+):
+    try:
+        conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        db.delete(conv)
+        db.commit()
+        logger.info(f"Conversation {conv_id} deleted")
+        return {"status": "success", "id": conv_id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting conversation {conv_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -185,6 +185,8 @@ function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [tokenEstimate, setTokenEstimate] = useState(0);
+  const [editingId, setEditingId] = useState(null); // Novo: ID da conversa sendo editada
+  const [editingTitle, setEditingTitle] = useState(''); // Novo: Título temporário para edição
   const { theme, isDark, toggleTheme } = useContext(ThemeContext);
 
   useEffect(() => {
@@ -268,6 +270,40 @@ function App() {
       }
     };
     fetchMessages();
+  };
+
+  const startEditing = (id, currentTitle) => {
+    setEditingId(id);
+    setEditingTitle(currentTitle);
+  };
+
+  const saveEdit = async (id) => {
+    if (!editingTitle.trim()) return;
+    try {
+      await axios.patch(`http://localhost:8000/conversations/${id}`, { title: editingTitle });
+      const next = conversations.map((c) => (c.id === id ? { ...c, title: editingTitle } : c));
+      persist(next);
+    } catch (e) {
+      console.error('Failed to update conversation title on backend', e);
+      // Fallback local
+      const next = conversations.map((c) => (c.id === id ? { ...c, title: editingTitle } : c));
+      persist(next);
+    }
+    setEditingId(null);
+  };
+
+  const deleteConversation = async (id) => {
+    if (!window.confirm('Tem certeza que deseja excluir esta conversa?')) return;
+    try {
+      await axios.delete(`http://localhost:8000/conversations/${id}`);
+    } catch (e) {
+      console.warn('Failed to delete conversation on backend, proceeding locally');
+    }
+    const next = conversations.filter((c) => c.id !== id);
+    persist(next);
+    if (selectedId === id) {
+      setSelectedId(next.length > 0 ? next[0].id : null);
+    }
   };
 
   const selectedConv = conversations.find((c) => c.id === selectedId) || null;
@@ -378,18 +414,68 @@ function App() {
           {conversations.map((c) => (
             <div
               key={c.id}
-              onClick={() => selectConversation(c.id)}
               style={{
                 padding: 8,
                 marginBottom: 8,
                 borderRadius: 6,
                 cursor: 'pointer',
                 background: c.id === selectedId ? theme.selected : 'transparent',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
               }}
             >
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>{c.title}</div>
-              <div style={{ fontSize: 12, color: theme.secondaryText }}>
-                {(c.messages && c.messages.length) || 0} mensagens
+              <div onClick={() => selectConversation(c.id)} style={{ flex: 1 }}>
+                {editingId === c.id ? (
+                  <input
+                    value={editingTitle}
+                    onChange={(e) => setEditingTitle(e.target.value)}
+                    onBlur={() => saveEdit(c.id)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') saveEdit(c.id); }}
+                    style={{
+                      width: '100%',
+                      padding: 4,
+                      borderRadius: 4,
+                      border: `1px solid ${theme.inputBorder}`,
+                      background: theme.background,
+                      color: theme.text
+                    }}
+                    autoFocus
+                  />
+                ) : (
+                  <>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>{c.title}</div>
+                    <div style={{ fontSize: 12, color: theme.secondaryText }}>
+                      {(c.messages && c.messages.length) || 0} mensagens
+                    </div>
+                  </>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => startEditing(c.id, c.title)}
+                  style={{
+                    padding: '4px 8px',
+                    border: 'none',
+                    background: 'transparent',
+                    color: theme.text,
+                    cursor: 'pointer'
+                  }}
+                >
+                  ✏️
+                </button>
+                <button
+                  onClick={() => deleteConversation(c.id)}
+                  style={{
+                    padding: '4px 8px',
+                    border: 'none',
+                    background: 'transparent',
+                    color: theme.text,
+                    cursor: 'pointer'
+                  }}
+                >
+                  🗑️
+                </button>
               </div>
             </div>
           ))}
