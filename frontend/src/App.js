@@ -1,8 +1,11 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
 import axios from 'axios';
+import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google';
+import { jwtDecode } from 'jwt-decode'; // ✅ MUDANÇA AQUI
 
 const STORAGE_KEY = 'myagent_conversations_v1';
 const THEME_KEY = 'myagent_theme';
+const AUTH_TOKEN_KEY = 'myagent_auth_token';
 
 const ThemeContext = createContext();
 
@@ -185,43 +188,63 @@ function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [tokenEstimate, setTokenEstimate] = useState(0);
-  const [editingId, setEditingId] = useState(null); // Novo: ID da conversa sendo editada
-  const [editingTitle, setEditingTitle] = useState(''); // Novo: Título temporário para edição
+  const [editingId, setEditingId] = useState(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem(AUTH_TOKEN_KEY));
+  const [user, setUser] = useState(null);
   const { theme, isDark, toggleTheme } = useContext(ThemeContext);
 
   useEffect(() => {
-    const fetchConvs = async () => {
+    if (authToken) {
       try {
-        const resp = await axios.get('http://localhost:8000/conversations');
-        if (Array.isArray(resp.data) && resp.data.length > 0) {
-          const mapped = resp.data.map((c) => ({ id: c.id, title: c.title, messages: [] }));
-          setConversations(mapped);
-          setSelectedId(mapped[0].id);
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(mapped));
-          return;
-        }
+        const decoded = jwtDecode(authToken); // ✅ MUDANÇA AQUI
+        setUser(decoded);
       } catch (e) {
-        console.warn('Could not fetch conversations from backend, falling back to localStorage', e.message || e);
+        console.error('Invalid token', e);
+        logout();
       }
+    }
+  }, [authToken]);
 
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        try {
-          const parsed = JSON.parse(raw);
-          setConversations(parsed);
-          if (parsed.length > 0) setSelectedId(parsed[0].id);
-        } catch (e) {
-          console.error('Failed to parse conversations from localStorage', e);
-        }
-      } else {
-        const first = { id: Date.now().toString(), title: 'Conversa 1', messages: [] };
-        setConversations([first]);
-        setSelectedId(first.id);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify([first]));
+  useEffect(() => {
+    const interceptor = axios.interceptors.request.use((config) => {
+      if (authToken) {
+        config.headers.Authorization = `Bearer ${authToken}`;
       }
-    };
-    fetchConvs();
-  }, []);
+      return config;
+    }, (error) => Promise.reject(error));
+
+    return () => axios.interceptors.request.eject(interceptor);
+  }, [authToken]);
+
+  useEffect(() => {
+    if (authToken) {
+      const fetchConvs = async () => {
+        try {
+          const resp = await axios.get('http://localhost:8000/conversations');
+          if (Array.isArray(resp.data)) {
+            const mapped = resp.data.map((c) => ({ id: c.id, title: c.title, messages: [] }));
+            setConversations(mapped);
+            if (mapped.length > 0) setSelectedId(mapped[0].id);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(mapped));
+          }
+        } catch (e) {
+          console.warn('Could not fetch conversations from backend', e);
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              setConversations(parsed);
+              if (parsed.length > 0) setSelectedId(parsed[0].id);
+            } catch (err) {
+              console.error('Failed to parse local conversations', err);
+            }
+          }
+        }
+      };
+      fetchConvs();
+    }
+  }, [authToken]);
 
   const persist = (next) => {
     setConversations(next);
@@ -232,44 +255,57 @@ function App() {
     }
   };
 
-  const createConversation = () => {
-    const doCreate = async () => {
-      try {
-        const resp = await axios.post('http://localhost:8000/conversations', { 
-          title: `Conversa ${conversations.length + 1}` 
-        });
-        const conv = resp.data;
-        const next = [{ id: conv.id, title: conv.title, messages: [] }, ...conversations];
-        persist(next);
-        setSelectedId(conv.id);
-        return;
-      } catch (e) {
-        console.warn('Failed to create conversation on backend, falling back to local-only');
-      }
+  const handleLogin = async (response) => {
+    try {
+      const resp = await axios.post('http://localhost:8000/auth/google', {
+        id_token: response.credential,
+      });
+      const token = resp.data.access_token;
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+      setAuthToken(token);
+    } catch (e) {
+      console.error('Login failed', e);
+    }
+  };
 
+  const logout = () => {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    setAuthToken(null);
+    setUser(null);
+    setConversations([]);
+    setSelectedId(null);
+  };
+
+  const createConversation = async () => {
+    try {
+      const resp = await axios.post('http://localhost:8000/conversations', { 
+        title: `Conversa ${conversations.length + 1}` 
+      });
+      const conv = resp.data;
+      const next = [{ id: conv.id, title: conv.title, messages: [] }, ...conversations];
+      persist(next);
+      setSelectedId(conv.id);
+    } catch (e) {
+      console.warn('Failed to create conversation on backend', e);
       const id = Date.now().toString();
       const title = `Conversa ${conversations.length + 1}`;
       const next = [{ id, title, messages: [] }, ...conversations];
       persist(next);
       setSelectedId(id);
-    };
-    doCreate();
+    }
   };
 
-  const selectConversation = (id) => {
+  const selectConversation = async (id) => {
     setSelectedId(id);
-    const fetchMessages = async () => {
-      try {
-        const resp = await axios.get(`http://localhost:8000/conversations/${id}`);
-        if (resp.data && resp.data.messages) {
-          const next = conversations.map((c) => (c.id === id ? { ...c, messages: resp.data.messages } : c));
-          persist(next);
-        }
-      } catch (e) {
-        // ignore — keep local messages
+    try {
+      const resp = await axios.get(`http://localhost:8000/conversations/${id}`);
+      if (resp.data && resp.data.messages) {
+        const next = conversations.map((c) => (c.id === id ? { ...c, messages: resp.data.messages.map(m => ({ ...m, ts: new Date(m.created_at).getTime() })) } : c));
+        persist(next);
       }
-    };
-    fetchMessages();
+    } catch (e) {
+      console.error('Failed to fetch messages', e);
+    }
   };
 
   const startEditing = (id, currentTitle) => {
@@ -284,8 +320,7 @@ function App() {
       const next = conversations.map((c) => (c.id === id ? { ...c, title: editingTitle } : c));
       persist(next);
     } catch (e) {
-      console.error('Failed to update conversation title on backend', e);
-      // Fallback local
+      console.error('Failed to update title', e);
       const next = conversations.map((c) => (c.id === id ? { ...c, title: editingTitle } : c));
       persist(next);
     }
@@ -296,24 +331,22 @@ function App() {
     if (!window.confirm('Tem certeza que deseja excluir esta conversa?')) return;
     try {
       await axios.delete(`http://localhost:8000/conversations/${id}`);
+      const next = conversations.filter((c) => c.id !== id);
+      persist(next);
+      if (selectedId === id) {
+        setSelectedId(next.length > 0 ? next[0].id : null);
+      }
     } catch (e) {
-      console.warn('Failed to delete conversation on backend, proceeding locally');
-    }
-    const next = conversations.filter((c) => c.id !== id);
-    persist(next);
-    if (selectedId === id) {
-      setSelectedId(next.length > 0 ? next[0].id : null);
+      console.error('Failed to delete conversation', e);
     }
   };
 
-  const selectedConv = conversations.find((c) => c.id === selectedId) || null;
-
   const sendMessage = async () => {
-    if (!input || !selectedConv) return;
+    if (!input || !selectedId) return;
     const userMsg = { role: 'user', content: input, ts: Date.now() };
 
     const updated = conversations.map((c) =>
-      c.id === selectedConv.id ? { ...c, messages: [...(c.messages || []), userMsg] } : c
+      c.id === selectedId ? { ...c, messages: [...(c.messages || []), userMsg] } : c
     );
     persist(updated);
     setInput('');
@@ -322,38 +355,57 @@ function App() {
     try {
       const resp = await axios.post('http://localhost:8000/chat', {
         message: userMsg.content,
-        conversation_id: selectedConv.id,
+        conversation_id: selectedId,
       });
 
-      const assistantText = resp.data && resp.data.reply ? resp.data.reply : 'No reply';
+      const assistantText = resp.data.reply || 'No reply';
       const assistantMsg = { role: 'assistant', content: assistantText, ts: Date.now() };
 
-      const convId = resp.data && resp.data.conversation_id ? resp.data.conversation_id : selectedConv.id;
+      const convId = resp.data.conversation_id || selectedId;
       
-      // Update title if returned (new conversation)
       let withAssistant = updated.map((c) =>
-        c.id === selectedConv.id || c.id === convId ? { ...c, messages: [...(c.messages || []), assistantMsg] } : c
+        c.id === selectedId || c.id === convId ? { ...c, messages: [...c.messages, assistantMsg] } : c
       );
 
-      if (resp.data.title && resp.data.title !== selectedConv.title) {
+      if (resp.data.title && resp.data.title !== conversations.find(c => c.id === selectedId).title) {
         withAssistant = withAssistant.map((c) =>
           c.id === convId ? { ...c, title: resp.data.title } : c
         );
       }
 
       persist(withAssistant);
-      if (convId !== selectedConv.id) setSelectedId(convId);
+      if (convId !== selectedId) setSelectedId(convId);
     } catch (err) {
-      console.error('Error calling backend /chat', err);
-      const errMsg = { role: 'assistant', content: 'Erro: não foi possível obter resposta do backend.', ts: Date.now() };
+      console.error('Error in chat', err);
+      const errMsg = { role: 'assistant', content: 'Erro: não foi possível obter resposta.', ts: Date.now() };
       const withError = updated.map((c) =>
-        c.id === selectedConv.id ? { ...c, messages: [...(c.messages || []), errMsg] } : c
+        c.id === selectedId ? { ...c, messages: [...c.messages, errMsg] } : c
       );
       persist(withError);
     } finally {
       setLoading(false);
     }
   };
+
+  const selectedConv = conversations.find((c) => c.id === selectedId) || null;
+
+  if (!authToken) {
+    return (
+      <div style={{
+        display: 'flex',
+        height: '100vh',
+        justifyContent: 'center',
+        alignItems: 'center',
+        background: themes.light.background,
+      }}>
+        <GoogleLogin
+          onSuccess={handleLogin}
+          onError={() => console.log('Login Failed')}
+          useOneTap
+        />
+      </div>
+    );
+  }
 
   return (
     <div style={{ 
@@ -407,6 +459,19 @@ function App() {
             >
               +
             </button>
+            <button 
+              onClick={logout}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 4,
+                cursor: 'pointer',
+                border: `1px solid ${theme.border}`,
+                background: theme.background,
+                color: theme.text
+              }}
+            >
+              Logout
+            </button>
           </div>
         </div>
 
@@ -418,14 +483,13 @@ function App() {
                 padding: 8,
                 marginBottom: 8,
                 borderRadius: 6,
-                cursor: 'pointer',
                 background: c.id === selectedId ? theme.selected : 'transparent',
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center'
               }}
             >
-              <div onClick={() => selectConversation(c.id)} style={{ flex: 1 }}>
+              <div onClick={() => selectConversation(c.id)} style={{ flex: 1, cursor: 'pointer' }}>
                 {editingId === c.id ? (
                   <input
                     value={editingTitle}
@@ -455,7 +519,7 @@ function App() {
                 <button
                   onClick={() => startEditing(c.id, c.title)}
                   style={{
-                    padding: '4px 8px',
+                    padding: '4px',
                     border: 'none',
                     background: 'transparent',
                     color: theme.text,
@@ -467,7 +531,7 @@ function App() {
                 <button
                   onClick={() => deleteConversation(c.id)}
                   style={{
-                    padding: '4px 8px',
+                    padding: '4px',
                     border: 'none',
                     background: 'transparent',
                     color: theme.text,
@@ -551,7 +615,7 @@ function App() {
                 color: theme.text,
                 fontFamily: 'inherit'
               }}
-              disabled={loading}
+              disabled={loading || !selectedId}
               maxLength={20000}
             />
             <div style={{ fontSize: 12, color: tokenEstimate > 4000 ? 'red' : theme.secondaryText }}>
@@ -560,7 +624,7 @@ function App() {
           </div>
           <button 
             onClick={sendMessage} 
-            disabled={loading || !input} 
+            disabled={loading || !input || !selectedId} 
             style={{ 
               padding: '10px 16px', 
               minWidth: 90,
@@ -582,9 +646,11 @@ function App() {
 
 function AppWithTheme() {
   return (
-    <ThemeProvider>
-      <App />
-    </ThemeProvider>
+    <GoogleOAuthProvider clientId={process.env.REACT_APP_GOOGLE_CLIENT_ID}>
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>
+    </GoogleOAuthProvider>
   );
 }
 
