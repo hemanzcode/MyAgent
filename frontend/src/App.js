@@ -203,6 +203,21 @@ function App() {
         console.error('Invalid token', e);
         logout();
       }
+    } else if (process.env.NODE_ENV === 'development') {
+      // Auto-login for development
+      const devLogin = async () => {
+        try {
+          console.log('Attempting development auto-login...');
+          const resp = await axios.post('http://localhost:8000/auth/dev');
+          const token = resp.data.access_token;
+          localStorage.setItem(AUTH_TOKEN_KEY, token);
+          setAuthToken(token);
+          console.log('Development auto-login successful.');
+        } catch (e) {
+          console.error('Development auto-login failed. Make sure DEV_MODE is enabled on the backend.', e);
+        }
+      };
+      devLogin();
     }
   }, [authToken]);
 
@@ -342,13 +357,17 @@ function App() {
   };
 
   const sendMessage = async () => {
-    if (!input || !selectedId) return;
+    if (!input) return;
     const userMsg = { role: 'user', content: input, ts: Date.now() };
 
-    const updated = conversations.map((c) =>
-      c.id === selectedId ? { ...c, messages: [...(c.messages || []), userMsg] } : c
-    );
-    persist(updated);
+    let tempConversations = conversations;
+    if (selectedId) {
+      tempConversations = conversations.map((c) =>
+        c.id === selectedId ? { ...c, messages: [...(c.messages || []), userMsg] } : c
+      );
+      persist(tempConversations);
+    }
+
     setInput('');
     setLoading(true);
 
@@ -360,28 +379,35 @@ function App() {
 
       const assistantText = resp.data.reply || 'No reply';
       const assistantMsg = { role: 'assistant', content: assistantText, ts: Date.now() };
+      const convId = resp.data.conversation_id;
+      const convTitle = resp.data.title;
 
-      const convId = resp.data.conversation_id || selectedId;
-      
-      let withAssistant = updated.map((c) =>
-        c.id === selectedId || c.id === convId ? { ...c, messages: [...c.messages, assistantMsg] } : c
-      );
-
-      if (resp.data.title && resp.data.title !== conversations.find(c => c.id === selectedId).title) {
-        withAssistant = withAssistant.map((c) =>
-          c.id === convId ? { ...c, title: resp.data.title } : c
+      if (!selectedId) {
+        const newConv = { id: convId, title: convTitle, messages: [userMsg, assistantMsg] };
+        const next = [newConv, ...conversations];
+        persist(next);
+        setSelectedId(convId);
+      } else {
+        const updated = tempConversations.map((c) =>
+          c.id === convId
+            ? {
+                ...c,
+                title: convTitle || c.title,
+                messages: [...c.messages, assistantMsg],
+              }
+            : c
         );
+        persist(updated);
       }
-
-      persist(withAssistant);
-      if (convId !== selectedId) setSelectedId(convId);
     } catch (err) {
       console.error('Error in chat', err);
       const errMsg = { role: 'assistant', content: 'Erro: não foi possível obter resposta.', ts: Date.now() };
-      const withError = updated.map((c) =>
-        c.id === selectedId ? { ...c, messages: [...c.messages, errMsg] } : c
-      );
-      persist(withError);
+      if (selectedId) {
+        const withError = tempConversations.map((c) =>
+          c.id === selectedId ? { ...c, messages: [...c.messages, errMsg] } : c
+        );
+        persist(withError);
+      }
     } finally {
       setLoading(false);
     }
@@ -615,7 +641,7 @@ function App() {
                 color: theme.text,
                 fontFamily: 'inherit'
               }}
-              disabled={loading || !selectedId}
+              disabled={loading}
               maxLength={20000}
             />
             <div style={{ fontSize: 12, color: tokenEstimate > 4000 ? 'red' : theme.secondaryText }}>
@@ -624,7 +650,7 @@ function App() {
           </div>
           <button 
             onClick={sendMessage} 
-            disabled={loading || !input || !selectedId} 
+            disabled={loading || !input} 
             style={{ 
               padding: '10px 16px', 
               minWidth: 90,

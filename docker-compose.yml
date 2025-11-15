@@ -28,9 +28,10 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/postgres
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_API_KEY: xx
       OPENAI_MODEL: gpt-3.5-turbo
       ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000  # Use full .env value for flexibility
+      DEV_MODE: "true"
     ports:
       - "8000:8000"
     networks:
@@ -45,7 +46,9 @@ services:
       - "3000:3000"
     environment:
       REACT_APP_API_URL: http://backend:8000  # 👈 Fix: Use service name for internal networking
-      REACT_APP_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}  # 👈 Add: Pass Google ID via env (from .env)
+      GOOGLE_CLIENT_ID: xx
+      OPENAI_API_KEY: xx
+      REACT_APP_GOOGLE_CLIENT_ID: xx  # 👈 Add: Pass Google ID via env (from .env)
     networks:
       - myagent_network
 

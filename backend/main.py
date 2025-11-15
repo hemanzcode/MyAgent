@@ -378,6 +378,35 @@ async def auth_google(google_token: GoogleToken, db: Session = Depends(get_db)):
         logger.error(f"Auth error: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@app.post("/auth/dev", response_model=Token)
+async def auth_dev(db: Session = Depends(get_db)):
+    if os.getenv("DEV_MODE", "false").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        user_id = "dev-user"
+        email = "dev@example.com"
+        name = "Developer"
+        picture = "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y"
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            user = User(id=user_id, email=email, name=name, picture=picture)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            logger.info("Created development user")
+        
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.id}, expires_delta=access_token_expires
+        )
+        return {"access_token": access_token, "token_type": "bearer"}
+    except Exception as e:
+        logger.error(f"Dev auth error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # ============================================================================
 # MESSAGE ENDPOINTS
 # ============================================================================
