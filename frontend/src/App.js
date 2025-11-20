@@ -219,13 +219,17 @@ function App() {
   };
 
   const sendMessage = async () => {
-    if (!input || !selectedId) return;
+    if (!input) return;
     const userMsg = { role: 'user', content: input, ts: Date.now() };
 
-    const updated = conversations.map((c) =>
-      c.id === selectedId ? { ...c, messages: [...(c.messages || []), userMsg] } : c
-    );
-    persist(updated);
+    let tempConversations = conversations;
+    if (selectedId) {
+      tempConversations = conversations.map((c) =>
+        c.id === selectedId ? { ...c, messages: [...(c.messages || []), userMsg] } : c
+      );
+      persist(tempConversations);
+    }
+
     setInput('');
     setLoading(true);
 
@@ -240,12 +244,36 @@ function App() {
       
       const assistantText = responses[Math.floor(Math.random() * responses.length)];
       const assistantMsg = { role: 'assistant', content: assistantText, ts: Date.now() };
+      const convId = resp.data.conversation_id;
+      const convTitle = resp.data.title;
 
-      const withAssistant = updated.map((c) =>
-        c.id === selectedId ? { ...c, messages: [...c.messages, assistantMsg] } : c
-      );
-
-      persist(withAssistant);
+      if (!selectedId) {
+        const newConv = { id: convId, title: convTitle, messages: [userMsg, assistantMsg] };
+        const next = [newConv, ...conversations];
+        persist(next);
+        setSelectedId(convId);
+      } else {
+        const updated = tempConversations.map((c) =>
+          c.id === convId
+            ? {
+                ...c,
+                title: convTitle || c.title,
+                messages: [...c.messages, assistantMsg],
+              }
+            : c
+        );
+        persist(updated);
+      }
+    } catch (err) {
+      console.error('Error in chat', err);
+      const errMsg = { role: 'assistant', content: 'Erro: não foi possível obter resposta.', ts: Date.now() };
+      if (selectedId) {
+        const withError = tempConversations.map((c) =>
+          c.id === selectedId ? { ...c, messages: [...c.messages, errMsg] } : c
+        );
+        persist(withError);
+      }
+    } finally {
       setLoading(false);
     }, 1000);
   };
@@ -355,280 +383,54 @@ function App() {
           background: theme.sidebar,
           boxShadow: `inset -5px 0 15px rgba(0, 255, 0, 0.05)`
         }}>
-          <div style={{ 
-            display: 'flex', 
-            justifyContent: 'space-between', 
-            alignItems: 'center', 
-            marginBottom: 12 
-          }}>
-            <h3 style={{ margin: 0, color: theme.accent, textShadow: `0 0 5px ${theme.accent}` }}>
-              [ CONVERSAS ]
-            </h3>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button 
-                onClick={createConversation}
-                style={{
-                  padding: '6px 10px',
-                  borderRadius: 2,
-                  cursor: 'pointer',
-                  border: `1px solid ${theme.accent}`,
-                  background: theme.background,
-                  color: theme.accent,
-                  fontSize: '16px',
-                  fontWeight: 'bold',
-                  textShadow: `0 0 5px ${theme.accent}`,
-                  transition: 'all 0.2s'
-                }}
-                onMouseEnter={(e) => {
-                  e.target.style.boxShadow = `0 0 10px rgba(0, 255, 0, 0.5)`;
-                  e.target.style.background = theme.messageAssistant;
-                }}
-                onMouseLeave={(e) => {
-                  e.target.style.boxShadow = '';
-                  e.target.style.background = theme.background;
-                }}
-              >
-                +
-              </button>
-              <button 
-                onClick={logout}
-                style={{
-                  padding: '6px 10px',
-                  borderRadius: 2,
-                  cursor: 'pointer',
-                  border: `1px solid ${theme.accent}`,
-                  background: theme.background,
-                  color: theme.accent,
-                  textShadow: `0 0 5px ${theme.accent}`,
-                  transition: 'all 0.2s',
-                  fontFamily: 'Courier New, monospace',
-                  fontSize: 12
-                }}
-                onMouseEnter={(e) => {
-                  e.target.style.boxShadow = `0 0 10px rgba(0, 255, 0, 0.5)`;
-                  e.target.style.background = theme.messageAssistant;
-                }}
-                onMouseLeave={(e) => {
-                  e.target.style.boxShadow = '';
-                  e.target.style.background = theme.background;
-                }}
-              >
-                Logout
-              </button>
-            </div>
-          </div>
-
-          <div style={{ overflowY: 'auto', height: 'calc(100% - 48px)' }}>
-            {conversations.map((c) => (
-              <div
-                key={c.id}
-                style={{
-                  padding: 8,
-                  marginBottom: 8,
-                  borderRadius: 2,
-                  background: c.id === selectedId ? theme.selected : 'transparent',
-                  border: c.id === selectedId ? `1px solid ${theme.accent}` : `1px solid ${theme.border}`,
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  boxShadow: c.id === selectedId ? `0 0 10px rgba(0, 255, 0, 0.3)` : 'none',
-                  transition: 'all 0.2s'
-                }}
-              >
-                <div onClick={() => selectConversation(c.id)} style={{ flex: 1, cursor: 'pointer' }}>
-                  {editingId === c.id ? (
-                    <input
-                      value={editingTitle}
-                      onChange={(e) => setEditingTitle(e.target.value)}
-                      onBlur={() => saveEdit(c.id)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveEdit(c.id); }}
-                      style={{
-                        width: '100%',
-                        padding: 4,
-                        borderRadius: 2,
-                        border: `1px solid ${theme.accent}`,
-                        background: theme.background,
-                        color: theme.accent,
-                        fontFamily: 'Courier New, monospace',
-                        textShadow: `0 0 5px ${theme.accent}`
-                      }}
-                      autoFocus
-                    />
-                  ) : (
-                    <>
-                      <div style={{ fontWeight: 600, marginBottom: 4, color: theme.text, fontSize: 12 }}>{c.title}</div>
-                      <div style={{ fontSize: 11, color: theme.secondaryText }}>
-                        [{(c.messages && c.messages.length) || 0}]
-                      </div>
-                    </>
-                  )}
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    onClick={() => startEditing(c.id, c.title)}
-                    style={{
-                      padding: '4px',
-                      border: 'none',
-                      background: 'transparent',
-                      color: theme.accent,
-                      cursor: 'pointer',
-                      fontSize: 14
-                    }}
-                  >
-                    ✏️
-                  </button>
-                  <button
-                    onClick={() => deleteConversation(c.id)}
-                    style={{
-                      padding: '4px',
-                      border: 'none',
-                      background: 'transparent',
-                      color: theme.accent,
-                      cursor: 'pointer',
-                      fontSize: 14
-                    }}
-                  >
-                    ⚠️
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Right panel: chat */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ 
-            padding: 16, 
-            borderBottom: `1px solid ${theme.border}`,
-            boxShadow: `inset 0 5px 15px rgba(0, 255, 0, 0.05)`
-          }}>
-            <h2 style={{ 
-              margin: 0, 
-              color: theme.accent,
-              fontSize: 16,
-              textShadow: `0 0 10px ${theme.accent}`
-            }}>
-              ➤ {selectedConv ? selectedConv.title : 'Selecione uma conversa'}
-            </h2>
-          </div>
-
-          <div style={{ flex: 1, padding: 16, overflowY: 'auto' }}>
-            {selectedConv && selectedConv.messages && selectedConv.messages.length > 0 ? (
-              selectedConv.messages.map((m, idx) => (
-                <div key={idx} style={{ marginBottom: 16 }}>
-                  <div style={{ 
-                    fontSize: 11, 
-                    color: theme.secondaryText, 
-                    marginBottom: 4,
-                    fontWeight: 600,
-                    textTransform: 'uppercase'
-                  }}>
-                    {m.role === 'user' ? '[ VOCÊ ]' : '[ AGENTE ]'}
-                  </div>
-                  <div style={{ 
-                    padding: 12, 
-                    background: m.role === 'user' ? theme.messageUser : theme.messageAssistant, 
-                    borderRadius: 2,
-                    color: theme.text,
-                    border: `1px solid ${theme.border}`,
-                    boxShadow: `0 0 5px rgba(0, 255, 0, 0.1)`,
-                    fontFamily: 'Courier New, monospace',
-                    fontSize: 12
-                  }}>
-                    <MessageContent content={m.content} theme={theme} />
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div style={{ color: theme.secondaryText, fontSize: 12 }}>
-                [ sistema ] Nenhuma mensagem ainda. Comece uma conversa...
-              </div>
-            )}
-          </div>
-
-          <div style={{ 
-            padding: 12, 
-            borderTop: `1px solid ${theme.border}`, 
-            display: 'flex', 
-            gap: 8, 
-            alignItems: 'flex-end' 
-          }}>
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <textarea
-                value={input}
-                onChange={(e) => {
-                  setInput(e.target.value);
-                  setTokenEstimate(Math.ceil(e.target.value.length / 4));
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    sendMessage();
-                  }
-                }}
-                placeholder={loading ? '[ enviando... ]' : '[ input ] Digite sua mensagem... (Shift+Enter)'}
-                style={{ 
-                  width: '100%', 
-                  minHeight: 60, 
-                  resize: 'vertical', 
-                  padding: 10, 
-                  borderRadius: 2, 
-                  border: `1px solid ${theme.accent}`,
-                  background: theme.background,
-                  color: theme.accent,
-                  fontFamily: 'Courier New, monospace',
-                  fontSize: 12,
-                  textShadow: `0 0 5px ${theme.accent}`,
-                  boxShadow: `0 0 10px rgba(0, 255, 0, 0.1)`,
-                  transition: 'all 0.2s'
-                }}
-                disabled={loading || !selectedId}
-                maxLength={20000}
-                onFocus={(e) => {
-                  e.target.style.boxShadow = `0 0 15px rgba(0, 255, 0, 0.3)`;
-                }}
-                onBlur={(e) => {
-                  e.target.style.boxShadow = `0 0 10px rgba(0, 255, 0, 0.1)`;
-                }}
-              />
-              <div style={{ 
-                fontSize: 11, 
-                color: tokenEstimate > 4000 ? '#ff0000' : theme.secondaryText,
-                textShadow: tokenEstimate > 4000 ? `0 0 5px #ff0000` : `0 0 5px ${theme.secondaryText}`
-              }}>
-                [ tokens: {tokenEstimate} {tokenEstimate > 4000 ? '// ALTO' : ''} ]
-              </div>
-            </div>
-            <button 
-              onClick={sendMessage} 
-              disabled={loading || !input || !selectedId} 
-              style={{ 
-                padding: '10px 16px', 
-                minWidth: 90,
-                borderRadius: 2,
-                cursor: loading || !input ? 'not-allowed' : 'pointer',
-                border: `1px solid ${theme.accent}`,
-                background: loading || !input ? theme.border : theme.background,
-                color: loading || !input ? theme.secondaryText : theme.accent,
-                fontWeight: 600,
-                fontFamily: 'Courier New, monospace',
-                fontSize: 12,
-                textShadow: `0 0 5px ${loading || !input ? 'none' : theme.accent}`,
-                transition: 'all 0.2s'
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <textarea
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+                setTokenEstimate(Math.ceil(e.target.value.length / 4));
               }}
-              onMouseEnter={(e) => {
-                if (!loading && input && selectedId) {
-                  e.target.style.boxShadow = `0 0 15px rgba(0, 255, 0, 0.5)`;
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  sendMessage();
                 }
               }}
-              onMouseLeave={(e) => {
-                e.target.style.boxShadow = '';
+              placeholder={loading ? 'Enviando...' : 'Digite sua mensagem... (Shift+Enter para nova linha)'}
+              style={{ 
+                width: '100%', 
+                minHeight: 60, 
+                resize: 'vertical', 
+                padding: 10, 
+                borderRadius: 6, 
+                border: `1px solid ${theme.inputBorder}`,
+                background: theme.background,
+                color: theme.text,
+                fontFamily: 'inherit'
               }}
-            >
-              {loading ? '[ ... ]' : '[ ENVIAR ]'}
-            </button>
+              disabled={loading}
+              maxLength={20000}
+            />
+            <div style={{ fontSize: 12, color: tokenEstimate > 4000 ? 'red' : theme.secondaryText }}>
+              Est. tokens: {tokenEstimate} {tokenEstimate > 4000 ? '(alto — pode exceder limites)' : ''}
+            </div>
           </div>
+          <button 
+            onClick={sendMessage} 
+            disabled={loading || !input} 
+            style={{ 
+              padding: '10px 16px', 
+              minWidth: 90,
+              borderRadius: 6,
+              cursor: loading || !input ? 'not-allowed' : 'pointer',
+              border: 'none',
+              background: loading || !input ? theme.border : '#0066cc',
+              color: '#ffffff',
+              fontWeight: 600
+            }}
+          >
+            {loading ? '...' : 'Enviar'}
+          </button>
         </div>
       </div>
     </div>
