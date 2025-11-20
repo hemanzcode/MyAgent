@@ -1,35 +1,66 @@
-import React, { useState, useContext, createContext } from 'react';
+import React, { useState, useEffect, createContext, useContext } from 'react';
+import axios from 'axios';
+import { GoogleOAuthProvider, GoogleLogin } from '@react-oauth/google';
+import { jwtDecode } from 'jwt-decode'; // ✅ MUDANÇA AQUI
+
+const STORAGE_KEY = 'myagent_conversations_v1';
+const THEME_KEY = 'myagent_theme';
+const AUTH_TOKEN_KEY = 'myagent_auth_token';
 
 const ThemeContext = createContext();
 
 const themes = {
-  matrix: {
-    background: '#0a0e0a',
-    text: '#00ff00',
-    textGlow: '#00ff00',
-    secondaryText: '#00cc00',
-    border: '#004d00',
-    sidebar: '#050805',
-    messageUser: '#0d2d0d',
-    messageAssistant: '#0a1a0a',
-    selected: '#1a4d1a',
-    inputBorder: '#004d00',
-    codeBackground: '#050805',
-    codeBorder: '#003300',
-    codeText: '#00ff00',
-    accent: '#00ff00'
+  light: {
+    background: '#ffffff',
+    text: '#000000',
+    secondaryText: '#666666',
+    border: '#eeeeee',
+    sidebar: '#ffffff',
+    messageUser: '#e6f7ff',
+    messageAssistant: '#f6f6f6',
+    selected: '#f0f0f0',
+    inputBorder: '#dddddd',
+    codeBackground: '#f5f5f5',
+    codeBorder: '#e0e0e0',
+    codeText: '#1a1a1a',
+  },
+  dark: {
+    background: '#1a1a1a',
+    text: '#ffffff',
+    secondaryText: '#999999',
+    border: '#333333',
+    sidebar: '#242424',
+    messageUser: '#1e3a8a',
+    messageAssistant: '#2d2d2d',
+    selected: '#363636',
+    inputBorder: '#404040',
+    codeBackground: '#1e1e1e',
+    codeBorder: '#3a3a3a',
+    codeText: '#d4d4d4',
   }
 };
 
 function ThemeProvider({ children }) {
-  const theme = themes.matrix;
+  const [isDark, setIsDark] = useState(() => {
+    const saved = localStorage.getItem(THEME_KEY);
+    return saved ? JSON.parse(saved) : false;
+  });
+
+  const toggleTheme = () => {
+    setIsDark(!isDark);
+    localStorage.setItem(THEME_KEY, JSON.stringify(!isDark));
+  };
+
+  const theme = isDark ? themes.dark : themes.light;
+
   return (
-    <ThemeContext.Provider value={{ theme }}>
+    <ThemeContext.Provider value={{ theme, isDark, toggleTheme }}>
       {children}
     </ThemeContext.Provider>
   );
 }
 
+// Component to render message content with code blocks
 function MessageContent({ content, theme }) {
   const [copied, setCopied] = useState(null);
 
@@ -39,6 +70,7 @@ function MessageContent({ content, theme }) {
     setTimeout(() => setCopied(null), 2000);
   };
 
+  // Parse content for code blocks (```language\ncode```)
   const parseContent = (text) => {
     const parts = [];
     const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
@@ -46,6 +78,7 @@ function MessageContent({ content, theme }) {
     let match;
 
     while ((match = codeBlockRegex.exec(text)) !== null) {
+      // Add text before code block
       if (match.index > lastIndex) {
         parts.push({
           type: 'text',
@@ -53,6 +86,7 @@ function MessageContent({ content, theme }) {
         });
       }
 
+      // Add code block
       parts.push({
         type: 'code',
         language: match[1] || 'text',
@@ -62,6 +96,7 @@ function MessageContent({ content, theme }) {
       lastIndex = match.index + match[0].length;
     }
 
+    // Add remaining text
     if (lastIndex < text.length) {
       parts.push({
         type: 'text',
@@ -84,12 +119,12 @@ function MessageContent({ content, theme }) {
               style={{
                 marginTop: 8,
                 marginBottom: 8,
-                borderRadius: 2,
+                borderRadius: 6,
                 border: `1px solid ${theme.codeBorder}`,
-                overflow: 'hidden',
-                boxShadow: `0 0 10px rgba(0, 255, 0, 0.2)`
+                overflow: 'hidden'
               }}
             >
+              {/* Code header */}
               <div
                 style={{
                   background: theme.codeBorder,
@@ -97,40 +132,27 @@ function MessageContent({ content, theme }) {
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  fontSize: 11,
-                  color: theme.accent,
-                  fontFamily: 'Courier New, monospace',
-                  fontWeight: 'bold'
+                  fontSize: 12,
+                  color: theme.secondaryText
                 }}
               >
-                <span>$ {part.language}</span>
+                <span>{part.language}</span>
                 <button
                   onClick={() => copyToClipboard(part.content, index)}
                   style={{
                     padding: '4px 8px',
                     fontSize: 11,
                     cursor: 'pointer',
-                    border: `1px solid ${theme.accent}`,
-                    borderRadius: 2,
+                    border: 'none',
+                    borderRadius: 4,
                     background: theme.background,
-                    color: theme.accent,
-                    fontFamily: 'Courier New, monospace',
-                    fontWeight: 'bold',
-                    textShadow: `0 0 5px ${theme.accent}`,
-                    transition: 'all 0.2s'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.target.style.boxShadow = `0 0 10px rgba(0, 255, 0, 0.5)`;
-                    e.target.style.background = theme.messageAssistant;
-                  }}
-                  onMouseLeave={(e) => {
-                    e.target.style.boxShadow = '';
-                    e.target.style.background = theme.background;
+                    color: theme.text
                   }}
                 >
                   {copied === index ? '✓ Copiado' : 'Copiar'}
                 </button>
               </div>
+              {/* Code content */}
               <pre
                 style={{
                   margin: 0,
@@ -138,10 +160,9 @@ function MessageContent({ content, theme }) {
                   background: theme.codeBackground,
                   color: theme.codeText,
                   overflow: 'auto',
-                  fontSize: 12,
-                  fontFamily: 'Courier New, monospace',
-                  lineHeight: 1.6,
-                  textShadow: `0 0 5px ${theme.codeText}`
+                  fontSize: 13,
+                  fontFamily: 'monospace',
+                  lineHeight: 1.5
                 }}
               >
                 <code>{part.content}</code>
@@ -149,8 +170,9 @@ function MessageContent({ content, theme }) {
             </div>
           );
         } else {
+          // Render normal text with line breaks preserved
           return (
-            <div key={index} style={{ whiteSpace: 'pre-wrap', fontFamily: 'Courier New, monospace' }}>
+            <div key={index} style={{ whiteSpace: 'pre-wrap' }}>
               {part.content}
             </div>
           );
@@ -168,33 +190,122 @@ function App() {
   const [tokenEstimate, setTokenEstimate] = useState(0);
   const [editingId, setEditingId] = useState(null);
   const [editingTitle, setEditingTitle] = useState('');
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const { theme } = useContext(ThemeContext);
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem(AUTH_TOKEN_KEY));
+  const [user, setUser] = useState(null);
+  const { theme, isDark, toggleTheme } = useContext(ThemeContext);
+
+  useEffect(() => {
+    if (authToken) {
+      try {
+        const decoded = jwtDecode(authToken); // ✅ MUDANÇA AQUI
+        setUser(decoded);
+      } catch (e) {
+        console.error('Invalid token', e);
+        logout();
+      }
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    const interceptor = axios.interceptors.request.use((config) => {
+      if (authToken) {
+        config.headers.Authorization = `Bearer ${authToken}`;
+      }
+      return config;
+    }, (error) => Promise.reject(error));
+
+    return () => axios.interceptors.request.eject(interceptor);
+  }, [authToken]);
+
+  useEffect(() => {
+    if (authToken) {
+      const fetchConvs = async () => {
+        try {
+          const resp = await axios.get('http://localhost:8000/conversations');
+          if (Array.isArray(resp.data)) {
+            const mapped = resp.data.map((c) => ({ id: c.id, title: c.title, messages: [] }));
+            setConversations(mapped);
+            if (mapped.length > 0) setSelectedId(mapped[0].id);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(mapped));
+          }
+        } catch (e) {
+          console.warn('Could not fetch conversations from backend', e);
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              setConversations(parsed);
+              if (parsed.length > 0) setSelectedId(parsed[0].id);
+            } catch (err) {
+              console.error('Failed to parse local conversations', err);
+            }
+          }
+        }
+      };
+      fetchConvs();
+    }
+  }, [authToken]);
 
   const persist = (next) => {
     setConversations(next);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch (e) {
+      console.error('Failed to save conversations', e);
+    }
   };
 
-  const login = () => {
-    setIsLoggedIn(true);
+  const handleLogin = async (response) => {
+    try {
+      const resp = await axios.post('http://localhost:8000/auth/google', {
+        id_token: response.credential,
+      });
+      const token = resp.data.access_token;
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+      setAuthToken(token);
+    } catch (e) {
+      console.error('Login failed', e);
+    }
   };
 
   const logout = () => {
-    setIsLoggedIn(false);
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    setAuthToken(null);
+    setUser(null);
     setConversations([]);
     setSelectedId(null);
   };
 
-  const createConversation = () => {
-    const id = Date.now().toString();
-    const title = `[ terminal-${conversations.length + 1} ]`;
-    const next = [{ id, title, messages: [] }, ...conversations];
-    persist(next);
-    setSelectedId(id);
+  const createConversation = async () => {
+    try {
+      const resp = await axios.post('http://localhost:8000/conversations', { 
+        title: `Conversa ${conversations.length + 1}` 
+      });
+      const conv = resp.data;
+      const next = [{ id: conv.id, title: conv.title, messages: [] }, ...conversations];
+      persist(next);
+      setSelectedId(conv.id);
+    } catch (e) {
+      console.warn('Failed to create conversation on backend', e);
+      const id = Date.now().toString();
+      const title = `Conversa ${conversations.length + 1}`;
+      const next = [{ id, title, messages: [] }, ...conversations];
+      persist(next);
+      setSelectedId(id);
+    }
   };
 
-  const selectConversation = (id) => {
+  const selectConversation = async (id) => {
     setSelectedId(id);
+    try {
+      const resp = await axios.get(`http://localhost:8000/conversations/${id}`);
+      if (resp.data && resp.data.messages) {
+        const next = conversations.map((c) => (c.id === id ? { ...c, messages: resp.data.messages.map(m => ({ ...m, ts: new Date(m.created_at).getTime() })) } : c));
+        persist(next);
+      }
+    } catch (e) {
+      console.error('Failed to fetch messages', e);
+    }
   };
 
   const startEditing = (id, currentTitle) => {
@@ -202,143 +313,96 @@ function App() {
     setEditingTitle(currentTitle);
   };
 
-  const saveEdit = (id) => {
+  const saveEdit = async (id) => {
     if (!editingTitle.trim()) return;
-    const next = conversations.map((c) => (c.id === id ? { ...c, title: editingTitle } : c));
-    persist(next);
+    try {
+      await axios.patch(`http://localhost:8000/conversations/${id}`, { title: editingTitle });
+      const next = conversations.map((c) => (c.id === id ? { ...c, title: editingTitle } : c));
+      persist(next);
+    } catch (e) {
+      console.error('Failed to update title', e);
+      const next = conversations.map((c) => (c.id === id ? { ...c, title: editingTitle } : c));
+      persist(next);
+    }
     setEditingId(null);
   };
 
-  const deleteConversation = (id) => {
-    if (!window.confirm('Deseja excluir?')) return;
-    const next = conversations.filter((c) => c.id !== id);
-    persist(next);
-    if (selectedId === id) {
-      setSelectedId(next.length > 0 ? next[0].id : null);
+  const deleteConversation = async (id) => {
+    if (!window.confirm('Tem certeza que deseja excluir esta conversa?')) return;
+    try {
+      await axios.delete(`http://localhost:8000/conversations/${id}`);
+      const next = conversations.filter((c) => c.id !== id);
+      persist(next);
+      if (selectedId === id) {
+        setSelectedId(next.length > 0 ? next[0].id : null);
+      }
+    } catch (e) {
+      console.error('Failed to delete conversation', e);
     }
   };
 
   const sendMessage = async () => {
-    if (!input) return;
+    if (!input || !selectedId) return;
     const userMsg = { role: 'user', content: input, ts: Date.now() };
 
-    let tempConversations = conversations;
-    if (selectedId) {
-      tempConversations = conversations.map((c) =>
-        c.id === selectedId ? { ...c, messages: [...(c.messages || []), userMsg] } : c
-      );
-      persist(tempConversations);
-    }
-
+    const updated = conversations.map((c) =>
+      c.id === selectedId ? { ...c, messages: [...(c.messages || []), userMsg] } : c
+    );
+    persist(updated);
     setInput('');
     setLoading(true);
 
-    // Simular resposta da IA
-    setTimeout(() => {
-      const responses = [
-        'Entendi sua mensagem. Processando informações...',
-        'Analisando dados do sistema. Aguarde...',
-        'Conexão estabelecida. Transmitindo dados...',
-        'Sistema respondendo: suas instruções foram recebidas.'
-      ];
-      
-      const assistantText = responses[Math.floor(Math.random() * responses.length)];
-      const assistantMsg = { role: 'assistant', content: assistantText, ts: Date.now() };
-      const convId = resp.data.conversation_id;
-      const convTitle = resp.data.title;
+    try {
+      const resp = await axios.post('http://localhost:8000/chat', {
+        message: userMsg.content,
+        conversation_id: selectedId,
+      });
 
-      if (!selectedId) {
-        const newConv = { id: convId, title: convTitle, messages: [userMsg, assistantMsg] };
-        const next = [newConv, ...conversations];
-        persist(next);
-        setSelectedId(convId);
-      } else {
-        const updated = tempConversations.map((c) =>
-          c.id === convId
-            ? {
-                ...c,
-                title: convTitle || c.title,
-                messages: [...c.messages, assistantMsg],
-              }
-            : c
+      const assistantText = resp.data.reply || 'No reply';
+      const assistantMsg = { role: 'assistant', content: assistantText, ts: Date.now() };
+
+      const convId = resp.data.conversation_id || selectedId;
+      
+      let withAssistant = updated.map((c) =>
+        c.id === selectedId || c.id === convId ? { ...c, messages: [...c.messages, assistantMsg] } : c
+      );
+
+      if (resp.data.title && resp.data.title !== conversations.find(c => c.id === selectedId).title) {
+        withAssistant = withAssistant.map((c) =>
+          c.id === convId ? { ...c, title: resp.data.title } : c
         );
-        persist(updated);
       }
+
+      persist(withAssistant);
+      if (convId !== selectedId) setSelectedId(convId);
     } catch (err) {
       console.error('Error in chat', err);
       const errMsg = { role: 'assistant', content: 'Erro: não foi possível obter resposta.', ts: Date.now() };
-      if (selectedId) {
-        const withError = tempConversations.map((c) =>
-          c.id === selectedId ? { ...c, messages: [...c.messages, errMsg] } : c
-        );
-        persist(withError);
-      }
+      const withError = updated.map((c) =>
+        c.id === selectedId ? { ...c, messages: [...c.messages, errMsg] } : c
+      );
+      persist(withError);
     } finally {
       setLoading(false);
-    }, 1000);
+    }
   };
 
   const selectedConv = conversations.find((c) => c.id === selectedId) || null;
 
-  if (!isLoggedIn) {
+  if (!authToken) {
     return (
       <div style={{
         display: 'flex',
         height: '100vh',
         justifyContent: 'center',
         alignItems: 'center',
-        background: theme.background,
-        flexDirection: 'column',
-        gap: 60,
-        fontFamily: 'Courier New, monospace',
-        overflow: 'hidden'
+        background: themes.light.background,
       }}>
-        <style>{`
-          @keyframes flicker {
-            0%, 18%, 22%, 25%, 53%, 57%, 100% { text-shadow: 0 0 10px #00ff00, 0 0 20px #00ff00, 0 0 40px #00ff00; }
-            20%, 24%, 55% { text-shadow: none; }
-          }
-          .matrix-title {
-            animation: flicker 3s infinite;
-          }
-        `}</style>
-        <h1 className="matrix-title" style={{
-          fontSize: 64,
-          fontWeight: 900,
-          margin: 0,
-          color: theme.text,
-          textAlign: 'center',
-          lineHeight: 1,
-          letterSpacing: 3
-        }}>
-          Hello Brow
-        </h1>
-        <button 
-          onClick={login}
-          style={{
-            padding: '12px 32px',
-            fontSize: 16,
-            fontFamily: 'Courier New, monospace',
-            border: `2px solid ${theme.accent}`,
-            background: theme.background,
-            color: theme.accent,
-            fontWeight: 'bold',
-            cursor: 'pointer',
-            textShadow: `0 0 10px ${theme.accent}`,
-            boxShadow: `0 0 20px rgba(0, 255, 0, 0.3)`,
-            transition: 'all 0.3s'
-          }}
-          onMouseEnter={(e) => {
-            e.target.style.boxShadow = `0 0 30px rgba(0, 255, 0, 0.6)`;
-            e.target.style.background = theme.selected;
-          }}
-          onMouseLeave={(e) => {
-            e.target.style.boxShadow = `0 0 20px rgba(0, 255, 0, 0.3)`;
-            e.target.style.background = theme.background;
-          }}
-        >
-          [ CONECTAR ]
-        </button>
+        <GoogleLogin
+          onSuccess={handleLogin}
+          onError={() => console.log('Login Failed')}
+          useOneTap
+        />
       </div>
     );
   }
@@ -347,41 +411,184 @@ function App() {
     <div style={{ 
       display: 'flex', 
       height: '100vh', 
-      fontFamily: 'Courier New, monospace',
+      fontFamily: 'Arial, sans-serif',
       background: theme.background,
-      color: theme.text,
-      flexDirection: 'column'
+      color: theme.text
     }}>
-      {/* Banner */}
-      <div style={{
-        background: 'linear-gradient(135deg, #0d2d0d 0%, #050805 100%)',
-        padding: '20px 24px',
-        borderBottom: `2px solid ${theme.accent}`,
-        textAlign: 'center',
-        boxShadow: `0 0 20px rgba(0, 255, 0, 0.2)`
+      {/* Left sidebar: conversations */}
+      <div style={{ 
+        width: 280, 
+        borderRight: `1px solid ${theme.border}`, 
+        padding: 12, 
+        boxSizing: 'border-box',
+        background: theme.sidebar
       }}>
-        <h1 style={{
-          margin: 0,
-          fontSize: 42,
-          fontWeight: 900,
-          color: theme.accent,
-          letterSpacing: 4,
-          textShadow: `0 0 15px ${theme.accent}, 0 0 30px rgba(0, 255, 0, 0.3)`,
-          fontFamily: 'Courier New, monospace'
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center', 
+          marginBottom: 12 
         }}>
-          ▓ Hello Brow ▓
-        </h1>
+          <h3 style={{ margin: 0 }}>Conversas</h3>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button 
+              onClick={toggleTheme}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 4,
+                cursor: 'pointer',
+                border: `1px solid ${theme.border}`,
+                background: theme.background,
+                color: theme.text
+              }}
+            >
+              {isDark ? '☀️' : '🌙'}
+            </button>
+            <button 
+              onClick={createConversation}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 4,
+                cursor: 'pointer',
+                border: `1px solid ${theme.border}`,
+                background: theme.background,
+                color: theme.text,
+                fontSize: '16px',
+                fontWeight: 'bold'
+              }}
+            >
+              +
+            </button>
+            <button 
+              onClick={logout}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 4,
+                cursor: 'pointer',
+                border: `1px solid ${theme.border}`,
+                background: theme.background,
+                color: theme.text
+              }}
+            >
+              Logout
+            </button>
+          </div>
+        </div>
+
+        <div style={{ overflowY: 'auto', height: 'calc(100% - 48px)' }}>
+          {conversations.map((c) => (
+            <div
+              key={c.id}
+              style={{
+                padding: 8,
+                marginBottom: 8,
+                borderRadius: 6,
+                background: c.id === selectedId ? theme.selected : 'transparent',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}
+            >
+              <div onClick={() => selectConversation(c.id)} style={{ flex: 1, cursor: 'pointer' }}>
+                {editingId === c.id ? (
+                  <input
+                    value={editingTitle}
+                    onChange={(e) => setEditingTitle(e.target.value)}
+                    onBlur={() => saveEdit(c.id)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') saveEdit(c.id); }}
+                    style={{
+                      width: '100%',
+                      padding: 4,
+                      borderRadius: 4,
+                      border: `1px solid ${theme.inputBorder}`,
+                      background: theme.background,
+                      color: theme.text
+                    }}
+                    autoFocus
+                  />
+                ) : (
+                  <>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>{c.title}</div>
+                    <div style={{ fontSize: 12, color: theme.secondaryText }}>
+                      {(c.messages && c.messages.length) || 0} mensagens
+                    </div>
+                  </>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => startEditing(c.id, c.title)}
+                  style={{
+                    padding: '4px',
+                    border: 'none',
+                    background: 'transparent',
+                    color: theme.text,
+                    cursor: 'pointer'
+                  }}
+                >
+                  ✏️
+                </button>
+                <button
+                  onClick={() => deleteConversation(c.id)}
+                  style={{
+                    padding: '4px',
+                    border: 'none',
+                    background: 'transparent',
+                    color: theme.text,
+                    cursor: 'pointer'
+                  }}
+                >
+                  🗑️
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
-      <div style={{ display: 'flex', flex: 1 }}>
-        {/* Left sidebar: conversations */}
+      {/* Right panel: chat */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: 16, borderBottom: `1px solid ${theme.border}` }}>
+          <h2 style={{ margin: 0 }}>
+            {selectedConv ? selectedConv.title : 'Selecione uma conversa'}
+          </h2>
+        </div>
+
+        <div style={{ flex: 1, padding: 16, overflowY: 'auto' }}>
+          {selectedConv && selectedConv.messages && selectedConv.messages.length > 0 ? (
+            selectedConv.messages.map((m, idx) => (
+              <div key={idx} style={{ marginBottom: 16 }}>
+                <div style={{ 
+                  fontSize: 12, 
+                  color: theme.secondaryText, 
+                  marginBottom: 4,
+                  fontWeight: 600
+                }}>
+                  {m.role === 'user' ? 'Você' : 'Assistente'}
+                </div>
+                <div style={{ 
+                  padding: 12, 
+                  background: m.role === 'user' ? theme.messageUser : theme.messageAssistant, 
+                  borderRadius: 8,
+                  color: theme.text
+                }}>
+                  <MessageContent content={m.content} theme={theme} />
+                </div>
+              </div>
+            ))
+          ) : (
+            <div style={{ color: theme.secondaryText }}>
+              Nenhuma mensagem ainda. Comece uma conversa.
+            </div>
+          )}
+        </div>
+
         <div style={{ 
-          width: 280, 
-          borderRight: `1px solid ${theme.border}`, 
           padding: 12, 
-          boxSizing: 'border-box',
-          background: theme.sidebar,
-          boxShadow: `inset -5px 0 15px rgba(0, 255, 0, 0.05)`
+          borderTop: `1px solid ${theme.border}`, 
+          display: 'flex', 
+          gap: 8, 
+          alignItems: 'flex-end' 
         }}>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
             <textarea
@@ -408,7 +615,7 @@ function App() {
                 color: theme.text,
                 fontFamily: 'inherit'
               }}
-              disabled={loading}
+              disabled={loading || !selectedId}
               maxLength={20000}
             />
             <div style={{ fontSize: 12, color: tokenEstimate > 4000 ? 'red' : theme.secondaryText }}>
@@ -417,7 +624,7 @@ function App() {
           </div>
           <button 
             onClick={sendMessage} 
-            disabled={loading || !input} 
+            disabled={loading || !input || !selectedId} 
             style={{ 
               padding: '10px 16px', 
               minWidth: 90,
@@ -439,9 +646,11 @@ function App() {
 
 function AppWithTheme() {
   return (
-    <ThemeProvider>
-      <App />
-    </ThemeProvider>
+    <GoogleOAuthProvider clientId={process.env.REACT_APP_GOOGLE_CLIENT_ID}>
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>
+    </GoogleOAuthProvider>
   );
 }
 
